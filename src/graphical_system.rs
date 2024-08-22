@@ -1,7 +1,10 @@
 use std::sync::Arc;
 use std::{error::Error, ffi};
 
-use ash::khr::{surface, swapchain};
+use ash::khr::{
+    create_renderpass2, depth_stencil_resolve, dynamic_rendering, get_physical_device_properties2,
+    maintenance2, multiview, surface, swapchain,
+};
 use ash::prelude::VkResult;
 use ash::{ext::debug_utils, vk, Device, Entry, Instance};
 use winit::{
@@ -50,8 +53,15 @@ impl GraphicalSystem {
                     .unwrap()
                     .to_vec();
             extension_names.push(debug_utils::NAME.as_ptr());
+            extension_names.push(get_physical_device_properties2::NAME.as_ptr());
+            #[cfg(target_os = "macos")]
+            extension_names.push(vk::KHR_PORTABILITY_ENUMERATION_NAME.as_ptr());
 
-            let flags = vk::InstanceCreateFlags::default();
+            let flags = if cfg!(target_os = "macos") {
+                vk::InstanceCreateFlags::ENUMERATE_PORTABILITY_KHR
+            } else {
+                vk::InstanceCreateFlags::default()
+            };
 
             let create_info = vk::InstanceCreateInfo::default()
                 .application_info(&app_info)
@@ -108,6 +118,11 @@ impl GraphicalSystem {
 
             let device_extension_names_raw = [
                 swapchain::NAME.as_ptr(),
+                multiview::NAME.as_ptr(),
+                maintenance2::NAME.as_ptr(),
+                create_renderpass2::NAME.as_ptr(),
+                depth_stencil_resolve::NAME.as_ptr(),
+                dynamic_rendering::NAME.as_ptr(),
                 #[cfg(any(target_os = "macos"))]
                 ash::khr::portability_subset::NAME.as_ptr(),
             ];
