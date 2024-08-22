@@ -19,6 +19,7 @@ pub struct GraphicalSystem {
     pub surface_format: vk::SurfaceFormatKHR,
     pub surface_resolution: vk::Extent2D,
     pub device: Device,
+    pub dynamic_device: dynamic_rendering::Device,
     pub queue_family_index: u32,
     pub present_queue: vk::Queue,
     pub swapchain_loader: swapchain::Device,
@@ -33,7 +34,7 @@ impl GraphicalSystem {
             // INSTANCE
 
             let app_info =
-                vk::ApplicationInfo::default().api_version(vk::make_api_version(0, 1, 0, 0));
+                vk::ApplicationInfo::default().api_version(vk::make_api_version(0, 1, 2, 283));
 
             let layers_names_raw = if cfg!(debug_assertions) {
                 let layer_names = [ffi::CStr::from_bytes_with_nul_unchecked(
@@ -129,15 +130,21 @@ impl GraphicalSystem {
 
             let device_features = vk::PhysicalDeviceFeatures::default();
 
+            let mut dynamic_rendering_feature =
+                vk::PhysicalDeviceDynamicRenderingFeatures::default().dynamic_rendering(true);
+
             let queue_create_info = vk::DeviceQueueCreateInfo::default()
                 .queue_family_index(queue_family_index as u32)
                 .queue_priorities(&[1.0]);
 
             let device_create_info = vk::DeviceCreateInfo::default()
                 .queue_create_infos(std::slice::from_ref(&queue_create_info))
-                .enabled_extension_names(&device_extension_names_raw);
+                .enabled_extension_names(&device_extension_names_raw)
+                .push_next(&mut dynamic_rendering_feature);
 
             let device = instance.create_device(physical_device, &device_create_info, None)?;
+
+            let dynamic_device = dynamic_rendering::Device::new(&instance, &device);
 
             // QUEUE
 
@@ -253,6 +260,7 @@ impl GraphicalSystem {
                 surface_format,
                 surface_resolution,
                 device,
+                dynamic_device,
                 queue_family_index: queue_family_index as u32,
                 present_queue,
                 swapchain_loader,
@@ -266,8 +274,8 @@ impl GraphicalSystem {
     pub fn record_command_buffer(
         &self,
         command_buffer: vk::CommandBuffer,
-        render_pass: vk::RenderPass,
-        framebuffer: vk::Framebuffer,
+        image: vk::Image,
+        image_view: vk::ImageView,
         graphics_pipeline: vk::Pipeline,
     ) -> VkResult<()> {
         unsafe {
@@ -276,27 +284,6 @@ impl GraphicalSystem {
 
             self.device
                 .begin_command_buffer(command_buffer, &command_buffer_begin_info)?;
-
-            let clear_color = [vk::ClearValue::default()];
-            let renderpass_begin_info = vk::RenderPassBeginInfo::default()
-                .render_pass(render_pass)
-                .framebuffer(framebuffer)
-                .render_area(
-                    vk::Rect2D::default()
-                        .offset(vk::Offset2D::default())
-                        .extent(
-                            vk::Extent2D::default()
-                                .height(self.surface_resolution.height)
-                                .width(self.surface_resolution.width),
-                        ),
-                )
-                .clear_values(&clear_color);
-
-            self.device.cmd_begin_render_pass(
-                command_buffer,
-                &renderpass_begin_info,
-                vk::SubpassContents::INLINE,
-            );
 
             self.device.cmd_bind_pipeline(
                 command_buffer,
@@ -318,8 +305,80 @@ impl GraphicalSystem {
             self.device
                 .cmd_set_scissor(command_buffer, 0, std::slice::from_ref(&scissor));
 
+            let color_attachments = [vk::RenderingAttachmentInfo::default()
+                .image_view(image_view)
+                .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                .resolve_mode(vk::ResolveModeFlags::NONE)
+                .load_op(vk::AttachmentLoadOp::CLEAR)
+                .store_op(vk::AttachmentStoreOp::STORE)
+                .clear_value(vk::ClearValue::default())];
+
+            let rendering_info = vk::RenderingInfo::default()
+                .render_area(
+                    vk::Rect2D::default()
+                        .offset(vk::Offset2D::default())
+                        .extent(
+                            vk::Extent2D::default()
+                                .height(self.surface_resolution.height)
+                                .width(self.surface_resolution.width),
+                        ),
+                )
+                .color_attachments(&color_attachments)
+                .layer_count(1);
+
+            let image_memory_barrier = vk::ImageMemoryBarrier::default()
+                .dst_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
+                .old_layout(vk::ImageLayout::UNDEFINED)
+                .new_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                .image(image)
+                .subresource_range(
+                    vk::ImageSubresourceRange::default()
+                        .aspect_mask(vk::ImageAspectFlags::COLOR)
+                        .base_mip_level(0)
+                        .level_count(1)
+                        .base_array_layer(0)
+                        .layer_count(1),
+                );
+
+            self.device.cmd_pipeline_barrier(
+                command_buffer,
+                vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                std::slice::from_ref(&image_memory_barrier),
+            );
+
+            self.dynamic_device
+                .cmd_begin_rendering(command_buffer, &rendering_info);
             self.device.cmd_draw(command_buffer, 3, 1, 0, 0);
-            self.device.cmd_end_render_pass(command_buffer);
+            self.dynamic_device.cmd_end_rendering(command_buffer);
+
+            let image_memory_barrier = vk::ImageMemoryBarrier::default()
+                .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
+                .old_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                .new_layout(vk::ImageLayout::PRESENT_SRC_KHR)
+                .image(image)
+                .subresource_range(
+                    vk::ImageSubresourceRange::default()
+                        .aspect_mask(vk::ImageAspectFlags::COLOR)
+                        .base_mip_level(0)
+                        .level_count(1)
+                        .base_array_layer(0)
+                        .layer_count(1),
+                );
+
+            self.device.cmd_pipeline_barrier(
+                command_buffer,
+                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                std::slice::from_ref(&image_memory_barrier),
+            );
+
             self.device.end_command_buffer(command_buffer)
         }
     }

@@ -12,10 +12,8 @@ pub struct Triangle {
     graphical_system: GraphicalSystem,
     vert_module: vk::ShaderModule,
     frag_module: vk::ShaderModule,
-    render_pass: vk::RenderPass,
     pipeline_layout: vk::PipelineLayout,
     pipelines: Vec<vk::Pipeline>,
-    framebuffers: Vec<vk::Framebuffer>,
     command_pool: vk::CommandPool,
     command_buffer: vk::CommandBuffer,
     image_available_semaphore: vk::Semaphore,
@@ -30,49 +28,16 @@ impl Triangle {
     ) -> VkResult<vk::ShaderModule> {
         let shader_info = vk::ShaderModuleCreateInfo::default().code(&code);
 
-        unsafe { graphical_system.device.create_shader_module(&shader_info, None) }
+        unsafe {
+            graphical_system
+                .device
+                .create_shader_module(&shader_info, None)
+        }
     }
 
     pub fn new(window: Arc<Window>) -> Result<Triangle, Box<dyn Error>> {
         unsafe {
             let graphical_system = GraphicalSystem::new(window)?;
-
-            // RENDER PASS
-
-            let render_pass_attachments = [vk::AttachmentDescription::default()
-                .format(graphical_system.surface_format.format)
-                .samples(vk::SampleCountFlags::TYPE_1)
-                .load_op(vk::AttachmentLoadOp::CLEAR)
-                .store_op(vk::AttachmentStoreOp::STORE)
-                .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
-                .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
-                .initial_layout(vk::ImageLayout::UNDEFINED)
-                .final_layout(vk::ImageLayout::PRESENT_SRC_KHR)];
-
-            let color_attachment_refs = [vk::AttachmentReference::default()
-                .attachment(0)
-                .layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)];
-
-            let subpass = vk::SubpassDescription::default()
-                .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
-                .color_attachments(&color_attachment_refs);
-
-            let dependency = vk::SubpassDependency::default()
-                .src_subpass(vk::SUBPASS_EXTERNAL)
-                .dst_subpass(0)
-                .src_stage_mask(vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT)
-                .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
-                .dst_stage_mask(vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT)
-                .dst_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE);
-
-            let render_pass_info = vk::RenderPassCreateInfo::default()
-                .attachments(&render_pass_attachments)
-                .subpasses(std::slice::from_ref(&subpass))
-                .dependencies(std::slice::from_ref(&dependency));
-
-            let render_pass = graphical_system
-                .device
-                .create_render_pass(&render_pass_info, None)?;
 
             // PIPELINE
 
@@ -171,6 +136,11 @@ impl Triangle {
                 .device
                 .create_pipeline_layout(&pipeline_layout_info, None)?;
 
+            let mut pipeline_rendering_info = vk::PipelineRenderingCreateInfo::default()
+                .color_attachment_formats(std::slice::from_ref(
+                    &graphical_system.surface_format.format,
+                ));
+
             let pipeline_info = vk::GraphicsPipelineCreateInfo::default()
                 .stages(&shader_stages_info)
                 .vertex_input_state(&vertex_input_info)
@@ -181,8 +151,8 @@ impl Triangle {
                 .color_blend_state(&color_blending_info)
                 .dynamic_state(&dynamic_state_info)
                 .layout(pipeline_layout)
-                .render_pass(render_pass)
-                .subpass(0);
+                .subpass(0)
+                .push_next(&mut pipeline_rendering_info);
 
             let pipelines = graphical_system
                 .device
@@ -192,28 +162,7 @@ impl Triangle {
                     None,
                 )
                 .unwrap();
-
-            // FRAMEBUFFERS
-
-            let framebuffers: Vec<vk::Framebuffer> = graphical_system
-                .swapchain_image_views
-                .iter()
-                .map(|&image_view| {
-                    let attachments = [image_view];
-                    let framebuffer_info = vk::FramebufferCreateInfo::default()
-                        .render_pass(render_pass)
-                        .attachment_count(1)
-                        .attachments(&attachments)
-                        .width(graphical_system.surface_resolution.width)
-                        .height(graphical_system.surface_resolution.height)
-                        .layers(1);
-
-                    graphical_system
-                        .device
-                        .create_framebuffer(&framebuffer_info, None)
-                })
-                .collect::<VkResult<_>>()?;
-
+         
             // COMMAND POOL
 
             let command_pool_info = vk::CommandPoolCreateInfo::default()
@@ -229,26 +178,28 @@ impl Triangle {
                 .level(vk::CommandBufferLevel::PRIMARY)
                 .command_buffer_count(1);
 
-            let command_buffer = graphical_system.device.allocate_command_buffers(&allocate_info)?[0];
+            let command_buffer = graphical_system
+                .device
+                .allocate_command_buffers(&allocate_info)?[0];
 
             // SYNC OBJECTS
 
             let semaphore_info = vk::SemaphoreCreateInfo::default();
             let fence_info = vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED);
-            let image_available_semaphore =
-                graphical_system.device.create_semaphore(&semaphore_info, None)?;
-            let render_finished_semaphore =
-                graphical_system.device.create_semaphore(&semaphore_info, None)?;
+            let image_available_semaphore = graphical_system
+                .device
+                .create_semaphore(&semaphore_info, None)?;
+            let render_finished_semaphore = graphical_system
+                .device
+                .create_semaphore(&semaphore_info, None)?;
             let in_flight_fence = graphical_system.device.create_fence(&fence_info, None)?;
 
             Ok(Triangle {
                 graphical_system,
                 vert_module,
                 frag_module,
-                render_pass,
                 pipeline_layout,
                 pipelines,
-                framebuffers,
                 command_pool,
                 command_buffer,
                 image_available_semaphore,
@@ -289,8 +240,8 @@ impl Triangle {
             self.graphical_system
                 .record_command_buffer(
                     self.command_buffer,
-                    self.render_pass,
-                    self.framebuffers[image_index as usize],
+                    self.graphical_system.swapchain_images[image_index as usize],
+                    self.graphical_system.swapchain_image_views[image_index as usize],
                     self.pipelines[0],
                 )
                 .expect("Failed to record the command buffer.");
@@ -341,20 +292,14 @@ impl Drop for Triangle {
             self.graphical_system
                 .device
                 .destroy_command_pool(self.command_pool, None);
-            self.framebuffers.iter().for_each(|&framebuffer| {
+            self.pipelines.iter().for_each(|&pipeline| {
                 self.graphical_system
                     .device
-                    .destroy_framebuffer(framebuffer, None)
+                    .destroy_pipeline(pipeline, None)
             });
-            self.pipelines
-                .iter()
-                .for_each(|&pipeline| self.graphical_system.device.destroy_pipeline(pipeline, None));
             self.graphical_system
                 .device
                 .destroy_pipeline_layout(self.pipeline_layout, None);
-            self.graphical_system
-                .device
-                .destroy_render_pass(self.render_pass, None);
             self.graphical_system
                 .device
                 .destroy_shader_module(self.vert_module, None);
