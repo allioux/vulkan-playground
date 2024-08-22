@@ -2,4 +2,4 @@
 
 The infamous [Vulkan Tutorial](https://vulkan-tutorial.com/).
 
-![A colourful triangle.](/images/triangle.svg)
+![A colourful triangle.](/images/triangle.png)
