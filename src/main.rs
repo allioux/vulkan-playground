@@ -66,14 +66,22 @@ impl ApplicationHandler for Application {
                 ..
             }
             | WindowEvent::CloseRequested => event_loop.exit(),
-            WindowEvent::Resized(PhysicalSize { width, height }) => (),
+            WindowEvent::Resized(size) => match self.triangle {
+                Some(ref mut triangle) => {
+                    triangle.resize(size);
+                    triangle.draw_frame();
+                }
+                _ => (),
+            },
             _ => (),
         }
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         match self.triangle {
-            Some(ref mut triangle) => triangle.draw_frame(),
+            Some(ref mut triangle) => {
+                triangle.draw_frame();
+            }
             _ => (),
         }
     }

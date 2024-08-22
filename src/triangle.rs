@@ -4,6 +4,7 @@ use std::sync::Arc;
 use ash::prelude::VkResult;
 use ash::util::read_spv;
 use ash::vk;
+use winit::dpi::PhysicalSize;
 use winit::window::Window;
 
 use crate::graphical_system::GraphicalSystem;
@@ -86,12 +87,12 @@ impl Triangle {
             let viewport = vk::Viewport::default()
                 .x(0.0)
                 .y(0.0)
-                .width(graphical_system.surface_resolution.width as f32)
-                .height(graphical_system.surface_resolution.height as f32)
+                .width(graphical_system.swapchain_data.surface_resolution.width as f32)
+                .height(graphical_system.swapchain_data.surface_resolution.height as f32)
                 .min_depth(0.0)
                 .max_depth(1.0);
 
-            let scissors = [graphical_system.surface_resolution.into()];
+            let scissors = [graphical_system.swapchain_data.surface_resolution.into()];
 
             let viewport_state_info = vk::PipelineViewportStateCreateInfo::default()
                 .viewports(std::slice::from_ref(&viewport))
@@ -142,7 +143,7 @@ impl Triangle {
 
             let mut pipeline_rendering_info = vk::PipelineRenderingCreateInfo::default()
                 .color_attachment_formats(std::slice::from_ref(
-                    &graphical_system.surface_format.format,
+                    &graphical_system.swapchain_data.surface_format.format,
                 ));
 
             let pipeline_info = vk::GraphicsPipelineCreateInfo::default()
@@ -228,7 +229,7 @@ impl Triangle {
         }
     }
 
-    pub fn draw_frame(&mut self) {
+    pub fn draw_frame(&mut self) -> Result<(), Box<dyn Error>> {
         let frame_index = self.current_frame as usize;
         unsafe {
             let _ = self.graphical_system.device.wait_for_fences(
@@ -236,70 +237,92 @@ impl Triangle {
                 true,
                 std::u64::MAX,
             );
-            let _ = self
-                .graphical_system
-                .device
-                .reset_fences(std::slice::from_ref(&self.in_flight_fences[frame_index]));
 
-            let (image_index, _) = self
+            self.graphical_system.device.reset_command_buffer(
+                self.command_buffers[frame_index],
+                vk::CommandBufferResetFlags::empty(),
+            )?;
+
+            let acquire_image_result = self
                 .graphical_system
-                .swapchain_loader
+                .swapchain_data
+                .swapchain_extension
                 .acquire_next_image(
-                    self.graphical_system.swapchain,
+                    self.graphical_system.swapchain_data.swapchain,
                     std::u64::MAX,
                     self.image_available_semaphores[frame_index],
                     vk::Fence::null(),
-                )
-                .expect("Failed to acquire the next image.");
+                );
 
-            self.graphical_system
-                .device
-                .reset_command_buffer(
-                    self.command_buffers[frame_index],
-                    vk::CommandBufferResetFlags::empty(),
-                )
-                .expect("Failed to reset the command buffer.");
+            match acquire_image_result {
+                Ok((image_index, _)) => {
+                    let _ = self
+                        .graphical_system
+                        .device
+                        .reset_fences(std::slice::from_ref(&self.in_flight_fences[frame_index]))?;
 
-            self.graphical_system
-                .record_command_buffer(
-                    self.command_buffers[frame_index],
-                    self.graphical_system.swapchain_images[image_index as usize],
-                    self.graphical_system.swapchain_image_views[image_index as usize],
-                    self.pipelines[0],
-                )
-                .expect("Failed to record the command buffer.");
+                    self.graphical_system
+                        .record_command_buffer(
+                            self.command_buffers[frame_index],
+                            self.graphical_system.swapchain_data.images[image_index as usize],
+                            self.graphical_system.swapchain_data.image_views[image_index as usize],
+                            self.pipelines[0],
+                        )
+                        .expect("Failed to record the command buffer.");
 
-            let signal_semaphores = [self.render_finished_semaphores[frame_index]];
+                    let signal_semaphores = [self.render_finished_semaphores[frame_index]];
 
-            let submit_info = vk::SubmitInfo::default()
-                .wait_semaphores(std::slice::from_ref(
-                    &self.image_available_semaphores[frame_index],
-                ))
-                .wait_dst_stage_mask(&[vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT])
-                .command_buffers(std::slice::from_ref(&self.command_buffers[frame_index]))
-                .signal_semaphores(&signal_semaphores);
+                    let submit_info = vk::SubmitInfo::default()
+                        .wait_semaphores(std::slice::from_ref(
+                            &self.image_available_semaphores[frame_index],
+                        ))
+                        .wait_dst_stage_mask(&[vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT])
+                        .command_buffers(std::slice::from_ref(&self.command_buffers[frame_index]))
+                        .signal_semaphores(&signal_semaphores);
 
-            self.graphical_system
-                .device
-                .queue_submit(
-                    self.graphical_system.present_queue,
-                    &[submit_info],
-                    self.in_flight_fences[frame_index],
-                )
-                .expect("Failed to submit draw command buffer.");
+                    self.graphical_system
+                        .device
+                        .queue_submit(
+                            self.graphical_system.present_queue,
+                            &[submit_info],
+                            self.in_flight_fences[frame_index],
+                        )
+                        .expect("Failed to submit draw command buffer.");
 
-            let present_info = vk::PresentInfoKHR::default()
-                .wait_semaphores(&signal_semaphores)
-                .swapchains(std::slice::from_ref(&self.graphical_system.swapchain))
-                .image_indices(std::slice::from_ref(&image_index));
+                    let present_info = vk::PresentInfoKHR::default()
+                        .wait_semaphores(&signal_semaphores)
+                        .swapchains(std::slice::from_ref(
+                            &self.graphical_system.swapchain_data.swapchain,
+                        ))
+                        .image_indices(std::slice::from_ref(&image_index));
 
-            self.graphical_system
-                .swapchain_loader
-                .queue_present(self.graphical_system.present_queue, &present_info)
-                .expect("");
+                    let queue_present_result = self
+                        .graphical_system
+                        .swapchain_data
+                        .swapchain_extension
+                        .queue_present(self.graphical_system.present_queue, &present_info);
+
+                    match queue_present_result {
+                        Ok(_) => (),
+                        Err(vk::Result::ERROR_OUT_OF_DATE_KHR | vk::Result::SUBOPTIMAL_KHR) => {
+                            return self.graphical_system.recreate_swapchain(None)
+                        }
+                        Err(err) => return Err(Box::new(err)),
+                    }
+                }
+                Err(vk::Result::ERROR_OUT_OF_DATE_KHR | vk::Result::SUBOPTIMAL_KHR) => {
+                    return self.graphical_system.recreate_swapchain(None)
+                }
+                Err(err) => return Err(Box::new(err)),
+            }
+
+            self.current_frame = (self.current_frame + 1) % self.in_flight_frames;
+            Ok(())
         }
+    }
 
-        self.current_frame = (self.current_frame + 1) % self.in_flight_frames;
+    pub fn resize(&mut self, window_size: PhysicalSize<u32>) {
+        self.graphical_system.recreate_swapchain(Some(window_size));
     }
 }
 

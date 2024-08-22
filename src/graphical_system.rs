@@ -7,6 +7,8 @@ use ash::khr::{
 };
 use ash::prelude::VkResult;
 use ash::{ext::debug_utils, vk, Device, Entry, Instance};
+use winit::dpi::PhysicalSize;
+use winit::window;
 use winit::{
     raw_window_handle::{HasDisplayHandle, HasWindowHandle},
     window::Window,
@@ -14,19 +16,24 @@ use winit::{
 
 pub struct GraphicalSystem {
     pub instance: Instance,
-    pub surface_loader: surface::Instance,
+    pub surface_extension: surface::Instance,
     pub surface: vk::SurfaceKHR,
-    pub surface_format: vk::SurfaceFormatKHR,
-    pub surface_resolution: vk::Extent2D,
+    physical_device: vk::PhysicalDevice,
     pub device: Device,
-    pub dynamic_device: dynamic_rendering::Device,
+    pub dynamic_rendering_extension: dynamic_rendering::Device,
     pub queue_family_index: u32,
     pub present_queue: vk::Queue,
-    pub swapchain_loader: swapchain::Device,
-    pub swapchain: vk::SwapchainKHR,
-    pub swapchain_images: Vec<vk::Image>,
-    pub swapchain_image_views: Vec<vk::ImageView>,
+    pub swapchain_data: SwapchainData,
     pub in_flight_frames: u32,
+}
+
+pub struct SwapchainData {
+    pub surface_format: vk::SurfaceFormatKHR,
+    pub surface_resolution: vk::Extent2D,
+    pub swapchain_extension: swapchain::Device,
+    pub swapchain: vk::SwapchainKHR,
+    pub images: Vec<vk::Image>,
+    pub image_views: Vec<vk::ImageView>,
 }
 
 impl GraphicalSystem {
@@ -79,7 +86,7 @@ impl GraphicalSystem {
 
             let physical_devices = instance.enumerate_physical_devices()?;
 
-            let surface_loader = surface::Instance::new(&entry, &instance);
+            let surface_extension = surface::Instance::new(&entry, &instance);
 
             let surface = ash_window::create_surface(
                 &entry,
@@ -100,7 +107,7 @@ impl GraphicalSystem {
                         .find_map(|(index, info)| {
                             let supports_graphic_and_surface =
                                 info.queue_flags.contains(vk::QueueFlags::GRAPHICS)
-                                    && surface_loader
+                                    && surface_extension
                                         .get_physical_device_surface_support(
                                             *device,
                                             index as u32,
@@ -145,16 +152,54 @@ impl GraphicalSystem {
 
             let device = instance.create_device(physical_device, &device_create_info, None)?;
 
-            let dynamic_device = dynamic_rendering::Device::new(&instance, &device);
+            let dynamic_rendering_extension = dynamic_rendering::Device::new(&instance, &device);
 
             // QUEUE
 
             let present_queue = device.get_device_queue(queue_family_index as u32, 0);
 
-            // SWAPCHAIN
+            let window_size = window.inner_size();
 
+            let extent = vk::Extent2D {
+                height: window_size.height,
+                width: window_size.width,
+            };
+
+            let swapchain_data = Self::create_swapchain(
+                &instance,
+                &device,
+                physical_device,
+                &surface_extension,
+                surface,
+                extent,
+            )?;
+
+            Ok(GraphicalSystem {
+                instance,
+                surface_extension,
+                surface,
+                physical_device,
+                device,
+                dynamic_rendering_extension,
+                queue_family_index: queue_family_index as u32,
+                present_queue,
+                swapchain_data,
+                in_flight_frames: 2,
+            })
+        }
+    }
+
+    pub fn create_swapchain(
+        instance: &Instance,
+        device: &Device,
+        physical_device: vk::PhysicalDevice,
+        surface_extension: &surface::Instance,
+        surface: vk::SurfaceKHR,
+        extent: vk::Extent2D,
+    ) -> Result<SwapchainData, Box<dyn Error>> {
+        unsafe {
             let surface_formats =
-                surface_loader.get_physical_device_surface_formats(physical_device, surface)?;
+                surface_extension.get_physical_device_surface_formats(physical_device, surface)?;
 
             let default_format = surface_formats[0].clone();
 
@@ -168,7 +213,7 @@ impl GraphicalSystem {
                 .first()
                 .unwrap_or(&default_format);
 
-            let surface_capabilities = surface_loader
+            let surface_capabilities = surface_extension
                 .get_physical_device_surface_capabilities(physical_device, surface)?;
 
             let mut desired_image_count = surface_capabilities.min_image_count + 1;
@@ -179,13 +224,8 @@ impl GraphicalSystem {
                 desired_image_count = surface_capabilities.max_image_count;
             }
 
-            let window_size = window.inner_size();
-
             let surface_resolution = match surface_capabilities.current_extent.width {
-                u32::MAX => vk::Extent2D {
-                    width: window_size.width,
-                    height: window_size.height,
-                },
+                u32::MAX => extent,
                 _ => surface_capabilities.current_extent,
             };
 
@@ -198,7 +238,7 @@ impl GraphicalSystem {
                 surface_capabilities.current_transform
             };
 
-            let present_modes = surface_loader
+            let present_modes = surface_extension
                 .get_physical_device_surface_present_modes(physical_device, surface)?;
 
             let present_mode = present_modes
@@ -207,7 +247,7 @@ impl GraphicalSystem {
                 .find(|&mode| mode == vk::PresentModeKHR::MAILBOX)
                 .unwrap_or(vk::PresentModeKHR::FIFO);
 
-            let swapchain_loader = swapchain::Device::new(&instance, &device);
+            let swapchain_extension = swapchain::Device::new(instance, device);
 
             let swapchain_create_info = vk::SwapchainCreateInfoKHR::default()
                 .surface(surface)
@@ -223,11 +263,11 @@ impl GraphicalSystem {
                 .clipped(true)
                 .image_array_layers(1);
 
-            let swapchain = swapchain_loader.create_swapchain(&swapchain_create_info, None)?;
+            let swapchain = swapchain_extension.create_swapchain(&swapchain_create_info, None)?;
 
-            let swapchain_images = swapchain_loader.get_swapchain_images(swapchain)?;
+            let images = swapchain_extension.get_swapchain_images(swapchain)?;
 
-            let swapchain_image_views = swapchain_images
+            let image_views = images
                 .iter()
                 .map(|&image| {
                     let info = vk::ImageViewCreateInfo::default()
@@ -254,22 +294,55 @@ impl GraphicalSystem {
                 })
                 .collect::<Result<_, _>>()?;
 
-            Ok(GraphicalSystem {
-                instance,
-                surface_loader,
-                surface,
+            Ok(SwapchainData {
                 surface_format,
                 surface_resolution,
-                device,
-                dynamic_device,
-                queue_family_index: queue_family_index as u32,
-                present_queue,
-                swapchain_loader,
+                swapchain_extension,
                 swapchain,
-                swapchain_images,
-                swapchain_image_views,
-                in_flight_frames: 2,
+                images,
+                image_views,
             })
+        }
+    }
+
+    pub fn recreate_swapchain(
+        &mut self,
+        window_size: Option<PhysicalSize<u32>>,
+    ) -> Result<(), Box<dyn Error>> {
+        unsafe {
+            let _ = self.device.device_wait_idle();
+            self.cleanup_swapchain();
+
+            let extent = match window_size {
+                Some(size) => vk::Extent2D {
+                    height: size.height,
+                    width: size.width,
+                },
+                None => self.swapchain_data.surface_resolution,
+            };
+
+            let swapchain_data = Self::create_swapchain(
+                &self.instance,
+                &self.device,
+                self.physical_device,
+                &self.surface_extension,
+                self.surface,
+                extent,
+            )?;
+
+            self.swapchain_data = swapchain_data;
+            Ok(())
+        }
+    }
+
+    fn cleanup_swapchain(&self) {
+        unsafe {
+            for &view in &self.swapchain_data.image_views {
+                self.device.destroy_image_view(view, None)
+            }
+            self.swapchain_data
+                .swapchain_extension
+                .destroy_swapchain(self.swapchain_data.swapchain, None);
         }
     }
 
@@ -296,14 +369,14 @@ impl GraphicalSystem {
             let viewport = vk::Viewport::default()
                 .x(0.0)
                 .y(0.0)
-                .width(self.surface_resolution.width as f32)
-                .height(self.surface_resolution.height as f32)
+                .width(self.swapchain_data.surface_resolution.width as f32)
+                .height(self.swapchain_data.surface_resolution.height as f32)
                 .min_depth(0.0)
                 .max_depth(1.0);
             self.device
                 .cmd_set_viewport(command_buffer, 0, std::slice::from_ref(&viewport));
 
-            let scissor = self.surface_resolution.into();
+            let scissor = self.swapchain_data.surface_resolution.into();
             self.device
                 .cmd_set_scissor(command_buffer, 0, std::slice::from_ref(&scissor));
 
@@ -321,8 +394,8 @@ impl GraphicalSystem {
                         .offset(vk::Offset2D::default())
                         .extent(
                             vk::Extent2D::default()
-                                .height(self.surface_resolution.height)
-                                .width(self.surface_resolution.width),
+                                .height(self.swapchain_data.surface_resolution.height)
+                                .width(self.swapchain_data.surface_resolution.width),
                         ),
                 )
                 .color_attachments(&color_attachments)
@@ -352,10 +425,11 @@ impl GraphicalSystem {
                 std::slice::from_ref(&image_memory_barrier),
             );
 
-            self.dynamic_device
+            self.dynamic_rendering_extension
                 .cmd_begin_rendering(command_buffer, &rendering_info);
             self.device.cmd_draw(command_buffer, 3, 1, 0, 0);
-            self.dynamic_device.cmd_end_rendering(command_buffer);
+            self.dynamic_rendering_extension
+                .cmd_end_rendering(command_buffer);
 
             let image_memory_barrier = vk::ImageMemoryBarrier::default()
                 .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
@@ -389,12 +463,8 @@ impl GraphicalSystem {
 impl Drop for GraphicalSystem {
     fn drop(&mut self) {
         unsafe {
-            for &view in &self.swapchain_image_views {
-                self.device.destroy_image_view(view, None)
-            }
-            self.swapchain_loader
-                .destroy_swapchain(self.swapchain, None);
-            self.surface_loader.destroy_surface(self.surface, None);
+            self.cleanup_swapchain();
+            self.surface_extension.destroy_surface(self.surface, None);
             self.device.destroy_device(None);
             self.instance.destroy_instance(None);
         }
