@@ -15,10 +15,12 @@ pub struct Triangle {
     pipeline_layout: vk::PipelineLayout,
     pipelines: Vec<vk::Pipeline>,
     command_pool: vk::CommandPool,
-    command_buffer: vk::CommandBuffer,
-    image_available_semaphore: vk::Semaphore,
-    render_finished_semaphore: vk::Semaphore,
-    in_flight_fence: vk::Fence,
+    command_buffers: Vec<vk::CommandBuffer>,
+    image_available_semaphores: Vec<vk::Semaphore>,
+    render_finished_semaphores: Vec<vk::Semaphore>,
+    in_flight_fences: Vec<vk::Fence>,
+    in_flight_frames: u32,
+    current_frame: u32,
 }
 
 impl Triangle {
@@ -36,6 +38,8 @@ impl Triangle {
     }
 
     pub fn new(window: Arc<Window>) -> Result<Triangle, Box<dyn Error>> {
+        let in_flight_frames = 2;
+
         unsafe {
             let graphical_system = GraphicalSystem::new(window)?;
 
@@ -162,7 +166,7 @@ impl Triangle {
                     None,
                 )
                 .unwrap();
-         
+
             // COMMAND POOL
 
             let command_pool_info = vk::CommandPoolCreateInfo::default()
@@ -176,23 +180,36 @@ impl Triangle {
             let allocate_info = vk::CommandBufferAllocateInfo::default()
                 .command_pool(command_pool)
                 .level(vk::CommandBufferLevel::PRIMARY)
-                .command_buffer_count(1);
+                .command_buffer_count(in_flight_frames);
 
-            let command_buffer = graphical_system
+            let command_buffers = graphical_system
                 .device
-                .allocate_command_buffers(&allocate_info)?[0];
+                .allocate_command_buffers(&allocate_info)?;
 
             // SYNC OBJECTS
 
             let semaphore_info = vk::SemaphoreCreateInfo::default();
             let fence_info = vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED);
-            let image_available_semaphore = graphical_system
-                .device
-                .create_semaphore(&semaphore_info, None)?;
-            let render_finished_semaphore = graphical_system
-                .device
-                .create_semaphore(&semaphore_info, None)?;
-            let in_flight_fence = graphical_system.device.create_fence(&fence_info, None)?;
+
+            let mut image_available_semaphores = vec![];
+            let mut render_finished_semaphores = vec![];
+            let mut in_flight_fences = vec![];
+
+            for _ in 0..in_flight_frames {
+                image_available_semaphores.push(
+                    graphical_system
+                        .device
+                        .create_semaphore(&semaphore_info, None)?,
+                );
+
+                render_finished_semaphores.push(
+                    graphical_system
+                        .device
+                        .create_semaphore(&semaphore_info, None)?,
+                );
+
+                in_flight_fences.push(graphical_system.device.create_fence(&fence_info, None)?);
+            }
 
             Ok(Triangle {
                 graphical_system,
@@ -201,25 +218,28 @@ impl Triangle {
                 pipeline_layout,
                 pipelines,
                 command_pool,
-                command_buffer,
-                image_available_semaphore,
-                render_finished_semaphore,
-                in_flight_fence,
+                command_buffers,
+                image_available_semaphores,
+                render_finished_semaphores,
+                in_flight_fences,
+                in_flight_frames,
+                current_frame: 0,
             })
         }
     }
 
-    pub fn draw_frame(&self) {
+    pub fn draw_frame(&mut self) {
+        let frame_index = self.current_frame as usize;
         unsafe {
             let _ = self.graphical_system.device.wait_for_fences(
-                std::slice::from_ref(&self.in_flight_fence),
+                std::slice::from_ref(&self.in_flight_fences[frame_index]),
                 true,
                 std::u64::MAX,
             );
             let _ = self
                 .graphical_system
                 .device
-                .reset_fences(std::slice::from_ref(&self.in_flight_fence));
+                .reset_fences(std::slice::from_ref(&self.in_flight_fences[frame_index]));
 
             let (image_index, _) = self
                 .graphical_system
@@ -227,31 +247,36 @@ impl Triangle {
                 .acquire_next_image(
                     self.graphical_system.swapchain,
                     std::u64::MAX,
-                    self.image_available_semaphore,
+                    self.image_available_semaphores[frame_index],
                     vk::Fence::null(),
                 )
                 .expect("Failed to acquire the next image.");
 
             self.graphical_system
                 .device
-                .reset_command_buffer(self.command_buffer, vk::CommandBufferResetFlags::empty())
+                .reset_command_buffer(
+                    self.command_buffers[frame_index],
+                    vk::CommandBufferResetFlags::empty(),
+                )
                 .expect("Failed to reset the command buffer.");
 
             self.graphical_system
                 .record_command_buffer(
-                    self.command_buffer,
+                    self.command_buffers[frame_index],
                     self.graphical_system.swapchain_images[image_index as usize],
                     self.graphical_system.swapchain_image_views[image_index as usize],
                     self.pipelines[0],
                 )
                 .expect("Failed to record the command buffer.");
 
-            let signal_semaphores = [self.render_finished_semaphore];
+            let signal_semaphores = [self.render_finished_semaphores[frame_index]];
 
             let submit_info = vk::SubmitInfo::default()
-                .wait_semaphores(std::slice::from_ref(&self.image_available_semaphore))
+                .wait_semaphores(std::slice::from_ref(
+                    &self.image_available_semaphores[frame_index],
+                ))
                 .wait_dst_stage_mask(&[vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT])
-                .command_buffers(std::slice::from_ref(&self.command_buffer))
+                .command_buffers(std::slice::from_ref(&self.command_buffers[frame_index]))
                 .signal_semaphores(&signal_semaphores);
 
             self.graphical_system
@@ -259,7 +284,7 @@ impl Triangle {
                 .queue_submit(
                     self.graphical_system.present_queue,
                     &[submit_info],
-                    self.in_flight_fence,
+                    self.in_flight_fences[frame_index],
                 )
                 .expect("Failed to submit draw command buffer.");
 
@@ -273,6 +298,8 @@ impl Triangle {
                 .queue_present(self.graphical_system.present_queue, &present_info)
                 .expect("");
         }
+
+        self.current_frame = (self.current_frame + 1) % self.in_flight_frames;
     }
 }
 
@@ -280,29 +307,41 @@ impl Drop for Triangle {
     fn drop(&mut self) {
         unsafe {
             let _ = self.graphical_system.device.device_wait_idle();
-            self.graphical_system
-                .device
-                .destroy_fence(self.in_flight_fence, None);
-            self.graphical_system
-                .device
-                .destroy_semaphore(self.render_finished_semaphore, None);
-            self.graphical_system
-                .device
-                .destroy_semaphore(self.image_available_semaphore, None);
+
+            for &fence in &self.in_flight_fences {
+                self.graphical_system.device.destroy_fence(fence, None)
+            }
+
+            for &semaphore in &self.render_finished_semaphores {
+                self.graphical_system
+                    .device
+                    .destroy_semaphore(semaphore, None)
+            }
+
+            for &semaphore in &self.image_available_semaphores {
+                self.graphical_system
+                    .device
+                    .destroy_semaphore(semaphore, None)
+            }
+
             self.graphical_system
                 .device
                 .destroy_command_pool(self.command_pool, None);
+
             self.pipelines.iter().for_each(|&pipeline| {
                 self.graphical_system
                     .device
                     .destroy_pipeline(pipeline, None)
             });
+
             self.graphical_system
                 .device
                 .destroy_pipeline_layout(self.pipeline_layout, None);
+
             self.graphical_system
                 .device
                 .destroy_shader_module(self.vert_module, None);
+
             self.graphical_system
                 .device
                 .destroy_shader_module(self.frag_module, None);

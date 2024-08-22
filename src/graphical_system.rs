@@ -26,6 +26,7 @@ pub struct GraphicalSystem {
     pub swapchain: vk::SwapchainKHR,
     pub swapchain_images: Vec<vk::Image>,
     pub swapchain_image_views: Vec<vk::ImageView>,
+    pub in_flight_frames: u32,
 }
 
 impl GraphicalSystem {
@@ -267,6 +268,7 @@ impl GraphicalSystem {
                 swapchain,
                 swapchain_images,
                 swapchain_image_views,
+                in_flight_frames: 2,
             })
         }
     }

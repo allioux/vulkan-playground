@@ -72,8 +72,8 @@ impl ApplicationHandler for Application {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        match &self.triangle {
-            Some(triangle) => triangle.draw_frame(),
+        match self.triangle {
+            Some(ref mut triangle) => triangle.draw_frame(),
             _ => (),
         }
     }
