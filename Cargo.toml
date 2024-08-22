@@ -1,0 +1,13 @@
+[package]
+name = "vulkan-playground"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ash = { version = "0.38.0", features = ["linked"] }
+ash-window = "0.13.0"
+spirv-reflect = "0.2.3"
+winit = "0.30.5"
+
+[build-dependencies]
+shaderc = "0.8.3"
