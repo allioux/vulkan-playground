@@ -8,7 +8,6 @@ use ash::khr::{
 use ash::prelude::VkResult;
 use ash::{ext::debug_utils, vk, Device, Entry, Instance};
 use winit::dpi::PhysicalSize;
-use winit::window;
 use winit::{
     raw_window_handle::{HasDisplayHandle, HasWindowHandle},
     window::Window,
@@ -321,7 +320,7 @@ impl GraphicalSystem {
                 None => self.swapchain_data.surface_resolution,
             };
 
-            let swapchain_data = Self::create_swapchain(
+            self.swapchain_data = Self::create_swapchain(
                 &self.instance,
                 &self.device,
                 self.physical_device,
@@ -330,7 +329,6 @@ impl GraphicalSystem {
                 extent,
             )?;
 
-            self.swapchain_data = swapchain_data;
             Ok(())
         }
     }
@@ -352,6 +350,7 @@ impl GraphicalSystem {
         image: vk::Image,
         image_view: vk::ImageView,
         graphics_pipeline: vk::Pipeline,
+        buffers: &[vk::Buffer],
     ) -> VkResult<()> {
         unsafe {
             let command_buffer_begin_info =
@@ -359,6 +358,8 @@ impl GraphicalSystem {
 
             self.device
                 .begin_command_buffer(command_buffer, &command_buffer_begin_info)?;
+
+            self.device.cmd_bind_vertex_buffers(command_buffer, 0, buffers, &[0]);
 
             self.device.cmd_bind_pipeline(
                 command_buffer,
@@ -427,7 +428,7 @@ impl GraphicalSystem {
 
             self.dynamic_rendering_extension
                 .cmd_begin_rendering(command_buffer, &rendering_info);
-            self.device.cmd_draw(command_buffer, 3, 1, 0, 0);
+            self.device.cmd_draw(command_buffer, 3 as u32, 1, 0, 0);
             self.dynamic_rendering_extension
                 .cmd_end_rendering(command_buffer);
 
@@ -456,6 +457,26 @@ impl GraphicalSystem {
             );
 
             self.device.end_command_buffer(command_buffer)
+        }
+    }
+
+    pub fn find_memory_type(
+        &self,
+        type_filter: u32,
+        properties: vk::MemoryPropertyFlags,
+    ) -> Result<u32, String> {
+        unsafe {
+            let memory_properties = self.instance.get_physical_device_memory_properties(self.physical_device);
+
+            for i in 0..memory_properties.memory_type_count {
+                if ((type_filter & (1 << i)) != 0)
+                    && (memory_properties.memory_types[i as usize].property_flags & properties)
+                        == properties
+                {
+                    return Ok(i);
+                }
+            }
+            Err("Failed to find an appropriate memory type.".to_string())
         }
     }
 }

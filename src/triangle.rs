@@ -1,4 +1,5 @@
 use std::error::Error;
+use std::mem::offset_of;
 use std::sync::Arc;
 
 use ash::prelude::VkResult;
@@ -8,6 +9,37 @@ use winit::dpi::PhysicalSize;
 use winit::window::Window;
 
 use crate::graphical_system::GraphicalSystem;
+
+#[repr(C)]
+struct Vertex {
+    pos: [f32; 2],
+    color: [f32; 3],
+}
+
+
+impl Vertex {
+    fn get_binding_description() -> vk::VertexInputBindingDescription {
+        vk::VertexInputBindingDescription::default()
+            .binding(0)
+            .stride(size_of::<Vertex>() as u32)
+            .input_rate(vk::VertexInputRate::VERTEX)
+    }
+
+    fn get_attribute_descriptions() -> Vec<vk::VertexInputAttributeDescription> {
+        vec![
+            vk::VertexInputAttributeDescription::default()
+                .binding(0)
+                .location(0)
+                .format(vk::Format::R32G32_SFLOAT)
+                .offset(offset_of!(Vertex, pos) as u32),
+            vk::VertexInputAttributeDescription::default()
+                .binding(0)
+                .location(1)
+                .format(vk::Format::R32G32B32_SFLOAT)
+                .offset(offset_of!(Vertex, color) as u32),
+        ]
+    }
+}
 
 pub struct Triangle {
     graphical_system: GraphicalSystem,
@@ -22,6 +54,8 @@ pub struct Triangle {
     in_flight_fences: Vec<vk::Fence>,
     in_flight_frames: u32,
     current_frame: u32,
+    vertex_buffer: vk::Buffer,
+    vertex_buffer_memory: vk::DeviceMemory,
 }
 
 impl Triangle {
@@ -40,6 +74,36 @@ impl Triangle {
 
     pub fn new(window: Arc<Window>) -> Result<Triangle, Box<dyn Error>> {
         let in_flight_frames = 2;
+
+        let vertices = vec![
+            Vertex {
+                pos: [0.0, -0.5],
+                color: [1.0, 0.0, 0.0],
+            },
+            Vertex {
+                pos: [0.5, 0.5],
+                color: [0.0, 1.0, 0.0],
+            },
+            Vertex {
+                pos: [-0.5, 0.5],
+                color: [0.0, 0.0, 1.0],
+            },
+        ];
+
+        let vertices2 = vec![
+            Vertex {
+                pos: [0.0, -0.5],
+                color: [1.0, 0.0, 0.0],
+            },
+            Vertex {
+                pos: [0.5, 0.5],
+                color: [0.0, 1.0, 0.0],
+            },
+            Vertex {
+                pos: [-0.5, 0.5],
+                color: [0.0, 0.0, 1.0],
+            },
+        ];
 
         unsafe {
             let graphical_system = GraphicalSystem::new(window)?;
@@ -78,7 +142,11 @@ impl Triangle {
             let dynamic_state_info =
                 vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
 
-            let vertex_input_info = vk::PipelineVertexInputStateCreateInfo::default();
+            let vertex_binding_description = Vertex::get_binding_description();
+            let vertex_attribute_descriptions = Vertex::get_attribute_descriptions();
+            let vertex_input_info = vk::PipelineVertexInputStateCreateInfo::default()
+                .vertex_binding_descriptions(std::slice::from_ref(&vertex_binding_description))
+                .vertex_attribute_descriptions(&vertex_attribute_descriptions);
 
             let input_assembly_info = vk::PipelineInputAssemblyStateCreateInfo::default()
                 .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
@@ -168,6 +236,48 @@ impl Triangle {
                 )
                 .unwrap();
 
+            // VERTEX BUFFERS
+
+            let buffer_info = vk::BufferCreateInfo::default()
+                .size((size_of::<Vertex>() * vertices.len()) as u64)
+                .usage(vk::BufferUsageFlags::VERTEX_BUFFER)
+                .sharing_mode(vk::SharingMode::EXCLUSIVE);
+
+            let vertex_buffer = graphical_system.device.create_buffer(&buffer_info, None)?;
+
+            let memory_requirements = graphical_system
+                .device
+                .get_buffer_memory_requirements(vertex_buffer);
+
+            let memory_type_index = graphical_system.find_memory_type(
+                memory_requirements.memory_type_bits,
+                vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+            )?;
+
+            let memory_alloc_info = vk::MemoryAllocateInfo::default()
+                .allocation_size(memory_requirements.size)
+                .memory_type_index(memory_type_index);
+
+            let vertex_buffer_memory = graphical_system
+                .device
+                .allocate_memory(&memory_alloc_info, None)?;
+
+            let _ =
+                graphical_system
+                    .device
+                    .bind_buffer_memory(vertex_buffer, vertex_buffer_memory, 0);
+
+            let data = graphical_system.device.map_memory(
+                vertex_buffer_memory,
+                0,
+                buffer_info.size,
+                vk::MemoryMapFlags::empty(),
+            )?;
+
+            std::ptr::copy_nonoverlapping(vertices.as_ptr(), data.cast(), vertices.len());
+
+            let _ = graphical_system.device.unmap_memory(vertex_buffer_memory);
+
             // COMMAND POOL
 
             let command_pool_info = vk::CommandPoolCreateInfo::default()
@@ -225,6 +335,8 @@ impl Triangle {
                 in_flight_fences,
                 in_flight_frames,
                 current_frame: 0,
+                vertex_buffer,
+                vertex_buffer_memory,
             })
         }
     }
@@ -267,6 +379,7 @@ impl Triangle {
                             self.graphical_system.swapchain_data.images[image_index as usize],
                             self.graphical_system.swapchain_data.image_views[image_index as usize],
                             self.pipelines[0],
+                            &[self.vertex_buffer]
                         )
                         .expect("Failed to record the command buffer.");
 
@@ -330,6 +443,14 @@ impl Drop for Triangle {
     fn drop(&mut self) {
         unsafe {
             let _ = self.graphical_system.device.device_wait_idle();
+
+            self.graphical_system
+                .device
+                .destroy_buffer(self.vertex_buffer, None);
+
+            self.graphical_system
+                .device
+                .free_memory(self.vertex_buffer_memory, None);
 
             for &fence in &self.in_flight_fences {
                 self.graphical_system.device.destroy_fence(fence, None)
