@@ -8,14 +8,13 @@ use ash::vk;
 use winit::dpi::PhysicalSize;
 use winit::window::Window;
 
-use crate::graphical_system::GraphicalSystem;
+use crate::graphics::{DeviceData, Graphics};
 
 #[repr(C)]
 struct Vertex {
     pos: [f32; 2],
     color: [f32; 3],
 }
-
 
 impl Vertex {
     fn get_binding_description() -> vk::VertexInputBindingDescription {
@@ -42,7 +41,7 @@ impl Vertex {
 }
 
 pub struct Triangle {
-    graphical_system: GraphicalSystem,
+    graphics: Graphics,
     vert_module: vk::ShaderModule,
     frag_module: vk::ShaderModule,
     pipeline_layout: vk::PipelineLayout,
@@ -60,13 +59,14 @@ pub struct Triangle {
 
 impl Triangle {
     fn create_shader_module(
-        graphical_system: &GraphicalSystem,
+        graphics: &Graphics,
         code: Vec<u32>,
     ) -> VkResult<vk::ShaderModule> {
         let shader_info = vk::ShaderModuleCreateInfo::default().code(&code);
 
         unsafe {
-            graphical_system
+            graphics
+                .device_data
                 .device
                 .create_shader_module(&shader_info, None)
         }
@@ -106,7 +106,15 @@ impl Triangle {
         ];
 
         unsafe {
-            let graphical_system = GraphicalSystem::new(window)?;
+            let graphics = Graphics::new(window)?;
+
+            let DeviceData {
+                ref device,
+                surface_resolution,
+                surface_format,
+                queue_family_index,
+                ..
+            } = graphics.device_data;
 
             // PIPELINE
 
@@ -119,8 +127,8 @@ impl Triangle {
             let frag_code = read_spv(&mut frag_shader).unwrap();
             let frag_reflect = spirv_reflect::ShaderModule::load_u32_data(&frag_code).unwrap();
 
-            let vert_module = Self::create_shader_module(&graphical_system, vert_code).unwrap();
-            let frag_module = Self::create_shader_module(&graphical_system, frag_code).unwrap();
+            let vert_module = Self::create_shader_module(&graphics, vert_code).unwrap();
+            let frag_module = Self::create_shader_module(&graphics, frag_code).unwrap();
 
             let vert_entry_name =
                 std::ffi::CString::new(vert_reflect.get_entry_point_name()).unwrap();
@@ -155,12 +163,12 @@ impl Triangle {
             let viewport = vk::Viewport::default()
                 .x(0.0)
                 .y(0.0)
-                .width(graphical_system.swapchain_data.surface_resolution.width as f32)
-                .height(graphical_system.swapchain_data.surface_resolution.height as f32)
+                .width(surface_resolution.width as f32)
+                .height(surface_resolution.height as f32)
                 .min_depth(0.0)
                 .max_depth(1.0);
 
-            let scissors = [graphical_system.swapchain_data.surface_resolution.into()];
+            let scissors = [surface_resolution.into()];
 
             let viewport_state_info = vk::PipelineViewportStateCreateInfo::default()
                 .viewports(std::slice::from_ref(&viewport))
@@ -205,14 +213,10 @@ impl Triangle {
                 .set_layouts(&[])
                 .push_constant_ranges(&[]);
 
-            let pipeline_layout = graphical_system
-                .device
-                .create_pipeline_layout(&pipeline_layout_info, None)?;
+            let pipeline_layout = device.create_pipeline_layout(&pipeline_layout_info, None)?;
 
             let mut pipeline_rendering_info = vk::PipelineRenderingCreateInfo::default()
-                .color_attachment_formats(std::slice::from_ref(
-                    &graphical_system.swapchain_data.surface_format.format,
-                ));
+                .color_attachment_formats(std::slice::from_ref(&surface_format.format));
 
             let pipeline_info = vk::GraphicsPipelineCreateInfo::default()
                 .stages(&shader_stages_info)
@@ -227,8 +231,7 @@ impl Triangle {
                 .subpass(0)
                 .push_next(&mut pipeline_rendering_info);
 
-            let pipelines = graphical_system
-                .device
+            let pipelines = device
                 .create_graphics_pipelines(
                     vk::PipelineCache::null(),
                     std::slice::from_ref(&pipeline_info),
@@ -243,13 +246,11 @@ impl Triangle {
                 .usage(vk::BufferUsageFlags::VERTEX_BUFFER)
                 .sharing_mode(vk::SharingMode::EXCLUSIVE);
 
-            let vertex_buffer = graphical_system.device.create_buffer(&buffer_info, None)?;
+            let vertex_buffer = device.create_buffer(&buffer_info, None)?;
 
-            let memory_requirements = graphical_system
-                .device
-                .get_buffer_memory_requirements(vertex_buffer);
+            let memory_requirements = device.get_buffer_memory_requirements(vertex_buffer);
 
-            let memory_type_index = graphical_system.find_memory_type(
+            let memory_type_index = graphics.find_memory_type(
                 memory_requirements.memory_type_bits,
                 vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
             )?;
@@ -258,16 +259,11 @@ impl Triangle {
                 .allocation_size(memory_requirements.size)
                 .memory_type_index(memory_type_index);
 
-            let vertex_buffer_memory = graphical_system
-                .device
-                .allocate_memory(&memory_alloc_info, None)?;
+            let vertex_buffer_memory = device.allocate_memory(&memory_alloc_info, None)?;
 
-            let _ =
-                graphical_system
-                    .device
-                    .bind_buffer_memory(vertex_buffer, vertex_buffer_memory, 0);
+            let _ = device.bind_buffer_memory(vertex_buffer, vertex_buffer_memory, 0);
 
-            let data = graphical_system.device.map_memory(
+            let data = device.map_memory(
                 vertex_buffer_memory,
                 0,
                 buffer_info.size,
@@ -276,26 +272,22 @@ impl Triangle {
 
             std::ptr::copy_nonoverlapping(vertices.as_ptr(), data.cast(), vertices.len());
 
-            let _ = graphical_system.device.unmap_memory(vertex_buffer_memory);
+            let _ = device.unmap_memory(vertex_buffer_memory);
 
             // COMMAND POOL
 
             let command_pool_info = vk::CommandPoolCreateInfo::default()
                 .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER)
-                .queue_family_index(graphical_system.queue_family_index);
+                .queue_family_index(queue_family_index);
 
-            let command_pool = graphical_system
-                .device
-                .create_command_pool(&command_pool_info, None)?;
+            let command_pool = device.create_command_pool(&command_pool_info, None)?;
 
             let allocate_info = vk::CommandBufferAllocateInfo::default()
                 .command_pool(command_pool)
                 .level(vk::CommandBufferLevel::PRIMARY)
                 .command_buffer_count(in_flight_frames);
 
-            let command_buffers = graphical_system
-                .device
-                .allocate_command_buffers(&allocate_info)?;
+            let command_buffers = device.allocate_command_buffers(&allocate_info)?;
 
             // SYNC OBJECTS
 
@@ -307,23 +299,15 @@ impl Triangle {
             let mut in_flight_fences = vec![];
 
             for _ in 0..in_flight_frames {
-                image_available_semaphores.push(
-                    graphical_system
-                        .device
-                        .create_semaphore(&semaphore_info, None)?,
-                );
+                image_available_semaphores.push(device.create_semaphore(&semaphore_info, None)?);
 
-                render_finished_semaphores.push(
-                    graphical_system
-                        .device
-                        .create_semaphore(&semaphore_info, None)?,
-                );
+                render_finished_semaphores.push(device.create_semaphore(&semaphore_info, None)?);
 
-                in_flight_fences.push(graphical_system.device.create_fence(&fence_info, None)?);
+                in_flight_fences.push(device.create_fence(&fence_info, None)?);
             }
 
             Ok(Triangle {
-                graphical_system,
+                graphics,
                 vert_module,
                 frag_module,
                 pipeline_layout,
@@ -343,24 +327,25 @@ impl Triangle {
 
     pub fn draw_frame(&mut self) -> Result<(), Box<dyn Error>> {
         let frame_index = self.current_frame as usize;
+        let DeviceData { device, .. } = &self.graphics.device_data;
         unsafe {
-            let _ = self.graphical_system.device.wait_for_fences(
+            let _ = device.wait_for_fences(
                 std::slice::from_ref(&self.in_flight_fences[frame_index]),
                 true,
                 std::u64::MAX,
             );
 
-            self.graphical_system.device.reset_command_buffer(
+            device.reset_command_buffer(
                 self.command_buffers[frame_index],
                 vk::CommandBufferResetFlags::empty(),
             )?;
 
             let acquire_image_result = self
-                .graphical_system
+                .graphics
                 .swapchain_data
                 .swapchain_extension
                 .acquire_next_image(
-                    self.graphical_system.swapchain_data.swapchain,
+                    self.graphics.swapchain_data.swapchain,
                     std::u64::MAX,
                     self.image_available_semaphores[frame_index],
                     vk::Fence::null(),
@@ -368,18 +353,16 @@ impl Triangle {
 
             match acquire_image_result {
                 Ok((image_index, _)) => {
-                    let _ = self
-                        .graphical_system
-                        .device
+                    let _ = device
                         .reset_fences(std::slice::from_ref(&self.in_flight_fences[frame_index]))?;
 
-                    self.graphical_system
+                    self.graphics
                         .record_command_buffer(
                             self.command_buffers[frame_index],
-                            self.graphical_system.swapchain_data.images[image_index as usize],
-                            self.graphical_system.swapchain_data.image_views[image_index as usize],
+                            self.graphics.swapchain_data.images[image_index as usize],
+                            self.graphics.swapchain_data.image_views[image_index as usize],
                             self.pipelines[0],
-                            &[self.vertex_buffer]
+                            &[self.vertex_buffer],
                         )
                         .expect("Failed to record the command buffer.");
 
@@ -393,10 +376,9 @@ impl Triangle {
                         .command_buffers(std::slice::from_ref(&self.command_buffers[frame_index]))
                         .signal_semaphores(&signal_semaphores);
 
-                    self.graphical_system
-                        .device
+                    device
                         .queue_submit(
-                            self.graphical_system.present_queue,
+                            self.graphics.present_queue,
                             &[submit_info],
                             self.in_flight_fences[frame_index],
                         )
@@ -405,26 +387,26 @@ impl Triangle {
                     let present_info = vk::PresentInfoKHR::default()
                         .wait_semaphores(&signal_semaphores)
                         .swapchains(std::slice::from_ref(
-                            &self.graphical_system.swapchain_data.swapchain,
+                            &self.graphics.swapchain_data.swapchain,
                         ))
                         .image_indices(std::slice::from_ref(&image_index));
 
                     let queue_present_result = self
-                        .graphical_system
+                        .graphics
                         .swapchain_data
                         .swapchain_extension
-                        .queue_present(self.graphical_system.present_queue, &present_info);
+                        .queue_present(self.graphics.present_queue, &present_info);
 
                     match queue_present_result {
                         Ok(_) => (),
                         Err(vk::Result::ERROR_OUT_OF_DATE_KHR | vk::Result::SUBOPTIMAL_KHR) => {
-                            return self.graphical_system.recreate_swapchain(None)
+                            return self.graphics.recreate_swapchain(None)
                         }
                         Err(err) => return Err(Box::new(err)),
                     }
                 }
                 Err(vk::Result::ERROR_OUT_OF_DATE_KHR | vk::Result::SUBOPTIMAL_KHR) => {
-                    return self.graphical_system.recreate_swapchain(None)
+                    return self.graphics.recreate_swapchain(None)
                 }
                 Err(err) => return Err(Box::new(err)),
             }
@@ -435,60 +417,43 @@ impl Triangle {
     }
 
     pub fn resize(&mut self, window_size: PhysicalSize<u32>) {
-        self.graphical_system.recreate_swapchain(Some(window_size));
+        self.graphics.recreate_swapchain(Some(window_size));
     }
 }
 
 impl Drop for Triangle {
     fn drop(&mut self) {
         unsafe {
-            let _ = self.graphical_system.device.device_wait_idle();
+            let DeviceData { device, .. } = &self.graphics.device_data;
+            let _ = device.device_wait_idle();
 
-            self.graphical_system
-                .device
-                .destroy_buffer(self.vertex_buffer, None);
+            device.destroy_buffer(self.vertex_buffer, None);
 
-            self.graphical_system
-                .device
-                .free_memory(self.vertex_buffer_memory, None);
+            device.free_memory(self.vertex_buffer_memory, None);
 
             for &fence in &self.in_flight_fences {
-                self.graphical_system.device.destroy_fence(fence, None)
+                device.destroy_fence(fence, None)
             }
 
             for &semaphore in &self.render_finished_semaphores {
-                self.graphical_system
-                    .device
-                    .destroy_semaphore(semaphore, None)
+                device.destroy_semaphore(semaphore, None)
             }
 
             for &semaphore in &self.image_available_semaphores {
-                self.graphical_system
-                    .device
-                    .destroy_semaphore(semaphore, None)
+                device.destroy_semaphore(semaphore, None)
             }
 
-            self.graphical_system
-                .device
-                .destroy_command_pool(self.command_pool, None);
+            device.destroy_command_pool(self.command_pool, None);
 
-            self.pipelines.iter().for_each(|&pipeline| {
-                self.graphical_system
-                    .device
-                    .destroy_pipeline(pipeline, None)
-            });
+            self.pipelines
+                .iter()
+                .for_each(|&pipeline| device.destroy_pipeline(pipeline, None));
 
-            self.graphical_system
-                .device
-                .destroy_pipeline_layout(self.pipeline_layout, None);
+            device.destroy_pipeline_layout(self.pipeline_layout, None);
 
-            self.graphical_system
-                .device
-                .destroy_shader_module(self.vert_module, None);
+            device.destroy_shader_module(self.vert_module, None);
 
-            self.graphical_system
-                .device
-                .destroy_shader_module(self.frag_module, None);
+            device.destroy_shader_module(self.frag_module, None);
         }
     }
 }

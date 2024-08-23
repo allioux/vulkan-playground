@@ -1,6 +1,6 @@
 use std::sync::Arc;
 use winit::application::ApplicationHandler;
-use winit::dpi::{LogicalSize, PhysicalSize};
+use winit::dpi::LogicalSize;
 use winit::event::{KeyEvent, WindowEvent};
 use winit::event_loop::ActiveEventLoop;
 use winit::keyboard::{Key, NamedKey};
@@ -10,7 +10,7 @@ use winit::{
     event_loop::{ControlFlow, EventLoop},
 };
 
-mod graphical_system;
+mod graphics;
 
 mod triangle;
 use triangle::Triangle;
