@@ -55,6 +55,8 @@ pub struct Triangle {
     current_frame: u32,
     vertex_buffer: vk::Buffer,
     vertex_buffer_memory: vk::DeviceMemory,
+    index_buffer: vk::Buffer,
+    index_buffer_memory: vk::DeviceMemory,
 }
 
 impl Triangle {
@@ -73,18 +75,24 @@ impl Triangle {
 
         let vertices = vec![
             Vertex {
-                pos: [0.0, -0.5],
+                pos: [-0.5, -0.5],
                 color: [1.0, 0.0, 0.0],
             },
             Vertex {
-                pos: [0.5, 0.5],
+                pos: [0.5, -0.5],
                 color: [0.0, 1.0, 0.0],
             },
             Vertex {
-                pos: [-0.5, 0.5],
+                pos: [0.5, 0.5],
                 color: [0.0, 0.0, 1.0],
             },
+            Vertex {
+                pos: [-0.5, 0.5],
+                color: [1.0, 1.0, 1.0],
+            },
         ];
+
+        let indices: Vec<u16> = vec![0, 1, 2, 2, 3, 0];
 
         unsafe {
             let base = Base::new(window)?;
@@ -158,36 +166,21 @@ impl Triangle {
 
             let command_buffers = device.allocate_command_buffers(&allocate_info)?;
 
-            // VERTEX BUFFERS
+            // VERTEX & INDEX BUFFERS
 
-            let buffer_size = (size_of::<Vertex>() * vertices.len()) as u64;
-
-            let (staging_buffer, staging_buffer_memory) = base.create_buffer(
-                buffer_size,
-                vk::BufferUsageFlags::TRANSFER_SRC,
-                vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+            let (vertex_buffer, vertex_buffer_memory) = base.create_and_populate_buffer(
+                command_pool,
+                vk::BufferUsageFlags::VERTEX_BUFFER,
+                vertices.as_ptr(),
+                vertices.len(),
             )?;
 
-            let data = device.map_memory(
-                staging_buffer_memory,
-                0,
-                buffer_size,
-                vk::MemoryMapFlags::empty(),
+            let (index_buffer, index_buffer_memory) = base.create_and_populate_buffer(
+                command_pool,
+                vk::BufferUsageFlags::INDEX_BUFFER,
+                indices.as_ptr(),
+                indices.len(),
             )?;
-
-            std::ptr::copy_nonoverlapping(vertices.as_ptr(), data.cast(), vertices.len());
-
-            let _ = device.unmap_memory(staging_buffer_memory);
-
-            let (vertex_buffer, vertex_buffer_memory) = base.create_buffer(
-                buffer_size,
-                vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::VERTEX_BUFFER,
-                vk::MemoryPropertyFlags::DEVICE_LOCAL,
-            )?;
-
-            base.copy_buffer(command_pool, staging_buffer, vertex_buffer, buffer_size)?;
-            device.destroy_buffer(staging_buffer, None);
-            device.free_memory(staging_buffer_memory, None);
 
             // SYNC OBJECTS
 
@@ -221,6 +214,8 @@ impl Triangle {
                 current_frame: 0,
                 vertex_buffer,
                 vertex_buffer_memory,
+                index_buffer,
+                index_buffer_memory,
             })
         }
     }
@@ -263,6 +258,9 @@ impl Triangle {
                             self.base.swapchain_data.image_views[image_index as usize],
                             self.pipelines[0],
                             &[self.vertex_buffer],
+                            self.index_buffer,
+                            vk::IndexType::UINT16,
+                            6,
                         )
                         .expect("Failed to record the command buffer.");
 
@@ -325,8 +323,10 @@ impl Drop for Triangle {
             let DeviceData { device, .. } = &self.base.device_data;
             let _ = device.device_wait_idle();
 
-            device.destroy_buffer(self.vertex_buffer, None);
+            device.destroy_buffer(self.index_buffer, None);
+            device.free_memory(self.index_buffer_memory, None);
 
+            device.destroy_buffer(self.vertex_buffer, None);
             device.free_memory(self.vertex_buffer_memory, None);
 
             for &fence in &self.in_flight_fences {
@@ -348,9 +348,7 @@ impl Drop for Triangle {
                 .for_each(|&pipeline| device.destroy_pipeline(pipeline, None));
 
             device.destroy_pipeline_layout(self.pipeline_layout, None);
-
             device.destroy_shader_module(self.vert_module, None);
-
             device.destroy_shader_module(self.frag_module, None);
         }
     }

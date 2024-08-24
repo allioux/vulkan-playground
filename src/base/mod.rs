@@ -183,7 +183,10 @@ impl Base {
         image: vk::Image,
         image_view: vk::ImageView,
         graphics_pipeline: vk::Pipeline,
-        buffers: &[vk::Buffer],
+        vertex_buffers: &[vk::Buffer],
+        index_buffer: vk::Buffer,
+        index_type: vk::IndexType,
+        index_count: u32,
     ) -> VkResult<()> {
         unsafe {
             let DeviceData {
@@ -197,8 +200,8 @@ impl Base {
                 vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::empty());
 
             device.begin_command_buffer(command_buffer, &command_buffer_begin_info)?;
-
-            device.cmd_bind_vertex_buffers(command_buffer, 0, buffers, &[0]);
+            device.cmd_bind_vertex_buffers(command_buffer, 0, vertex_buffers, &[0]);
+            device.cmd_bind_index_buffer(command_buffer, index_buffer, 0, index_type);
 
             device.cmd_bind_pipeline(
                 command_buffer,
@@ -264,7 +267,7 @@ impl Base {
             );
 
             dynamic_rendering_extension.cmd_begin_rendering(command_buffer, &rendering_info);
-            device.cmd_draw(command_buffer, 3 as u32, 1, 0, 0);
+            device.cmd_draw_indexed(command_buffer, index_count, 1, 0, 0, 0);
             dynamic_rendering_extension.cmd_end_rendering(command_buffer);
 
             let image_memory_barrier = vk::ImageMemoryBarrier::default()
@@ -407,6 +410,49 @@ impl Base {
             let buffer_memory = device.allocate_memory(&memory_alloc_info, None)?;
 
             let _ = device.bind_buffer_memory(buffer, buffer_memory, 0);
+
+            Ok((buffer, buffer_memory))
+        }
+    }
+
+    pub fn create_and_populate_buffer<T>(
+        &self,
+        command_pool: vk::CommandPool,
+        usage: vk::BufferUsageFlags,
+        src: *const T,
+        count: usize,
+    ) -> Result<(vk::Buffer, vk::DeviceMemory), Box<dyn Error>> {
+        unsafe {
+            let device = &self.device_data.device;
+
+            let buffer_size = (count * size_of::<T>()) as u64;
+
+            let (staging_buffer, staging_buffer_memory) = self.create_buffer(
+                buffer_size,
+                vk::BufferUsageFlags::TRANSFER_SRC,
+                vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+            )?;
+
+            let data = device.map_memory(
+                staging_buffer_memory,
+                0,
+                buffer_size,
+                vk::MemoryMapFlags::empty(),
+            )?;
+
+            std::ptr::copy_nonoverlapping(src, data.cast(), count);
+
+            let _ = device.unmap_memory(staging_buffer_memory);
+
+            let (buffer, buffer_memory) = self.create_buffer(
+                buffer_size,
+                vk::BufferUsageFlags::TRANSFER_DST | usage,
+                vk::MemoryPropertyFlags::DEVICE_LOCAL,
+            )?;
+
+            self.copy_buffer(command_pool, staging_buffer, buffer, buffer_size)?;
+            device.destroy_buffer(staging_buffer, None);
+            device.free_memory(staging_buffer_memory, None);
 
             Ok((buffer, buffer_memory))
         }
