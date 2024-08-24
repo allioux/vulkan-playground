@@ -10,7 +10,7 @@ use winit::{
     event_loop::{ControlFlow, EventLoop},
 };
 
-mod graphics;
+mod base;
 
 mod triangle;
 use triangle::Triangle;

@@ -8,7 +8,7 @@ use ash::vk;
 use winit::dpi::PhysicalSize;
 use winit::window::Window;
 
-use crate::graphics::{DeviceData, Graphics};
+use crate::base::{Base, DeviceData, PipelineDescriptor};
 
 #[repr(C)]
 struct Vertex {
@@ -41,7 +41,7 @@ impl Vertex {
 }
 
 pub struct Triangle {
-    graphics: Graphics,
+    base: Base,
     vert_module: vk::ShaderModule,
     frag_module: vk::ShaderModule,
     pipeline_layout: vk::PipelineLayout,
@@ -58,15 +58,11 @@ pub struct Triangle {
 }
 
 impl Triangle {
-    fn create_shader_module(
-        graphics: &Graphics,
-        code: Vec<u32>,
-    ) -> VkResult<vk::ShaderModule> {
+    fn create_shader_module(base: &Base, code: Vec<u32>) -> VkResult<vk::ShaderModule> {
         let shader_info = vk::ShaderModuleCreateInfo::default().code(&code);
 
         unsafe {
-            graphics
-                .device_data
+            base.device_data
                 .device
                 .create_shader_module(&shader_info, None)
         }
@@ -90,33 +86,14 @@ impl Triangle {
             },
         ];
 
-        let vertices2 = vec![
-            Vertex {
-                pos: [0.0, -0.5],
-                color: [1.0, 0.0, 0.0],
-            },
-            Vertex {
-                pos: [0.5, 0.5],
-                color: [0.0, 1.0, 0.0],
-            },
-            Vertex {
-                pos: [-0.5, 0.5],
-                color: [0.0, 0.0, 1.0],
-            },
-        ];
-
         unsafe {
-            let graphics = Graphics::new(window)?;
+            let base = Base::new(window)?;
 
             let DeviceData {
                 ref device,
-                surface_resolution,
-                surface_format,
                 queue_family_index,
                 ..
-            } = graphics.device_data;
-
-            // PIPELINE
+            } = base.device_data;
 
             let mut vert_shader = std::fs::File::open("shaders/shader_vert.spv").unwrap();
             let mut frag_shader = std::fs::File::open("shaders/shader_frag.spv").unwrap();
@@ -127,13 +104,19 @@ impl Triangle {
             let frag_code = read_spv(&mut frag_shader).unwrap();
             let frag_reflect = spirv_reflect::ShaderModule::load_u32_data(&frag_code).unwrap();
 
-            let vert_module = Self::create_shader_module(&graphics, vert_code).unwrap();
-            let frag_module = Self::create_shader_module(&graphics, frag_code).unwrap();
+            let vert_module = Self::create_shader_module(&base, vert_code).unwrap();
+            let frag_module = Self::create_shader_module(&base, frag_code).unwrap();
 
             let vert_entry_name =
                 std::ffi::CString::new(vert_reflect.get_entry_point_name()).unwrap();
             let frag_entry_name =
                 std::ffi::CString::new(frag_reflect.get_entry_point_name()).unwrap();
+
+            let vertex_binding_description = Vertex::get_binding_description();
+            let vertex_attribute_descriptions = Vertex::get_attribute_descriptions();
+            let vertex_input_info = vk::PipelineVertexInputStateCreateInfo::default()
+                .vertex_binding_descriptions(std::slice::from_ref(&vertex_binding_description))
+                .vertex_attribute_descriptions(&vertex_attribute_descriptions);
 
             let shader_stages_info = [
                 vk::PipelineShaderStageCreateInfo::default()
@@ -146,68 +129,7 @@ impl Triangle {
                     .name(frag_entry_name.as_c_str()),
             ];
 
-            let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
-            let dynamic_state_info =
-                vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
-
-            let vertex_binding_description = Vertex::get_binding_description();
-            let vertex_attribute_descriptions = Vertex::get_attribute_descriptions();
-            let vertex_input_info = vk::PipelineVertexInputStateCreateInfo::default()
-                .vertex_binding_descriptions(std::slice::from_ref(&vertex_binding_description))
-                .vertex_attribute_descriptions(&vertex_attribute_descriptions);
-
-            let input_assembly_info = vk::PipelineInputAssemblyStateCreateInfo::default()
-                .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
-                .primitive_restart_enable(false);
-
-            let viewport = vk::Viewport::default()
-                .x(0.0)
-                .y(0.0)
-                .width(surface_resolution.width as f32)
-                .height(surface_resolution.height as f32)
-                .min_depth(0.0)
-                .max_depth(1.0);
-
-            let scissors = [surface_resolution.into()];
-
-            let viewport_state_info = vk::PipelineViewportStateCreateInfo::default()
-                .viewports(std::slice::from_ref(&viewport))
-                .scissors(&scissors);
-
-            let rasterizer_info = vk::PipelineRasterizationStateCreateInfo::default()
-                .depth_clamp_enable(false)
-                .rasterizer_discard_enable(false)
-                .polygon_mode(vk::PolygonMode::FILL)
-                .line_width(1.0)
-                .cull_mode(vk::CullModeFlags::BACK)
-                .front_face(vk::FrontFace::CLOCKWISE)
-                .depth_bias_enable(false)
-                .depth_bias_constant_factor(0.0)
-                .depth_bias_clamp(0.0)
-                .depth_bias_slope_factor(0.0);
-
-            let multisampling_info = vk::PipelineMultisampleStateCreateInfo::default()
-                .sample_shading_enable(false)
-                .rasterization_samples(vk::SampleCountFlags::TYPE_1)
-                .min_sample_shading(1.0)
-                .alpha_to_coverage_enable(false)
-                .alpha_to_one_enable(false);
-
-            let color_blend_attachment_info = vk::PipelineColorBlendAttachmentState::default()
-                .color_write_mask(vk::ColorComponentFlags::RGBA)
-                .blend_enable(true)
-                .src_color_blend_factor(vk::BlendFactor::SRC_ALPHA)
-                .dst_color_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
-                .color_blend_op(vk::BlendOp::ADD)
-                .src_alpha_blend_factor(vk::BlendFactor::ONE)
-                .dst_alpha_blend_factor(vk::BlendFactor::ZERO)
-                .alpha_blend_op(vk::BlendOp::ADD);
-
-            let color_blending_info = vk::PipelineColorBlendStateCreateInfo::default()
-                .logic_op_enable(false)
-                .logic_op(vk::LogicOp::COPY)
-                .attachments(std::slice::from_ref(&color_blend_attachment_info))
-                .blend_constants([0.0, 0.0, 0.0, 0.0]);
+            // PIPELINE
 
             let pipeline_layout_info = vk::PipelineLayoutCreateInfo::default()
                 .set_layouts(&[])
@@ -215,29 +137,11 @@ impl Triangle {
 
             let pipeline_layout = device.create_pipeline_layout(&pipeline_layout_info, None)?;
 
-            let mut pipeline_rendering_info = vk::PipelineRenderingCreateInfo::default()
-                .color_attachment_formats(std::slice::from_ref(&surface_format.format));
-
-            let pipeline_info = vk::GraphicsPipelineCreateInfo::default()
-                .stages(&shader_stages_info)
-                .vertex_input_state(&vertex_input_info)
-                .input_assembly_state(&input_assembly_info)
-                .viewport_state(&viewport_state_info)
-                .rasterization_state(&rasterizer_info)
-                .multisample_state(&multisampling_info)
-                .color_blend_state(&color_blending_info)
-                .dynamic_state(&dynamic_state_info)
-                .layout(pipeline_layout)
-                .subpass(0)
-                .push_next(&mut pipeline_rendering_info);
-
-            let pipelines = device
-                .create_graphics_pipelines(
-                    vk::PipelineCache::null(),
-                    std::slice::from_ref(&pipeline_info),
-                    None,
-                )
-                .unwrap();
+            let pipeline = base.create_pipeline(&PipelineDescriptor {
+                pipeline_layout,
+                vertex_input_info,
+                shader_stages_info: &shader_stages_info,
+            })?;
 
             // VERTEX BUFFERS
 
@@ -250,7 +154,7 @@ impl Triangle {
 
             let memory_requirements = device.get_buffer_memory_requirements(vertex_buffer);
 
-            let memory_type_index = graphics.find_memory_type(
+            let memory_type_index = base.find_memory_type(
                 memory_requirements.memory_type_bits,
                 vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
             )?;
@@ -307,11 +211,11 @@ impl Triangle {
             }
 
             Ok(Triangle {
-                graphics,
+                base,
                 vert_module,
                 frag_module,
                 pipeline_layout,
-                pipelines,
+                pipelines: vec![pipeline],
                 command_pool,
                 command_buffers,
                 image_available_semaphores,
@@ -327,7 +231,7 @@ impl Triangle {
 
     pub fn draw_frame(&mut self) -> Result<(), Box<dyn Error>> {
         let frame_index = self.current_frame as usize;
-        let DeviceData { device, .. } = &self.graphics.device_data;
+        let DeviceData { device, .. } = &self.base.device_data;
         unsafe {
             let _ = device.wait_for_fences(
                 std::slice::from_ref(&self.in_flight_fences[frame_index]),
@@ -341,11 +245,11 @@ impl Triangle {
             )?;
 
             let acquire_image_result = self
-                .graphics
+                .base
                 .swapchain_data
                 .swapchain_extension
                 .acquire_next_image(
-                    self.graphics.swapchain_data.swapchain,
+                    self.base.swapchain_data.swapchain,
                     std::u64::MAX,
                     self.image_available_semaphores[frame_index],
                     vk::Fence::null(),
@@ -356,11 +260,11 @@ impl Triangle {
                     let _ = device
                         .reset_fences(std::slice::from_ref(&self.in_flight_fences[frame_index]))?;
 
-                    self.graphics
+                    self.base
                         .record_command_buffer(
                             self.command_buffers[frame_index],
-                            self.graphics.swapchain_data.images[image_index as usize],
-                            self.graphics.swapchain_data.image_views[image_index as usize],
+                            self.base.swapchain_data.images[image_index as usize],
+                            self.base.swapchain_data.image_views[image_index as usize],
                             self.pipelines[0],
                             &[self.vertex_buffer],
                         )
@@ -378,7 +282,7 @@ impl Triangle {
 
                     device
                         .queue_submit(
-                            self.graphics.present_queue,
+                            self.base.present_queue,
                             &[submit_info],
                             self.in_flight_fences[frame_index],
                         )
@@ -386,27 +290,25 @@ impl Triangle {
 
                     let present_info = vk::PresentInfoKHR::default()
                         .wait_semaphores(&signal_semaphores)
-                        .swapchains(std::slice::from_ref(
-                            &self.graphics.swapchain_data.swapchain,
-                        ))
+                        .swapchains(std::slice::from_ref(&self.base.swapchain_data.swapchain))
                         .image_indices(std::slice::from_ref(&image_index));
 
                     let queue_present_result = self
-                        .graphics
+                        .base
                         .swapchain_data
                         .swapchain_extension
-                        .queue_present(self.graphics.present_queue, &present_info);
+                        .queue_present(self.base.present_queue, &present_info);
 
                     match queue_present_result {
                         Ok(_) => (),
                         Err(vk::Result::ERROR_OUT_OF_DATE_KHR | vk::Result::SUBOPTIMAL_KHR) => {
-                            return self.graphics.recreate_swapchain(None)
+                            return self.base.recreate_swapchain(None)
                         }
                         Err(err) => return Err(Box::new(err)),
                     }
                 }
                 Err(vk::Result::ERROR_OUT_OF_DATE_KHR | vk::Result::SUBOPTIMAL_KHR) => {
-                    return self.graphics.recreate_swapchain(None)
+                    return self.base.recreate_swapchain(None)
                 }
                 Err(err) => return Err(Box::new(err)),
             }
@@ -417,14 +319,14 @@ impl Triangle {
     }
 
     pub fn resize(&mut self, window_size: PhysicalSize<u32>) {
-        self.graphics.recreate_swapchain(Some(window_size));
+        self.base.recreate_swapchain(Some(window_size));
     }
 }
 
 impl Drop for Triangle {
     fn drop(&mut self) {
         unsafe {
-            let DeviceData { device, .. } = &self.graphics.device_data;
+            let DeviceData { device, .. } = &self.base.device_data;
             let _ = device.device_wait_idle();
 
             device.destroy_buffer(self.vertex_buffer, None);

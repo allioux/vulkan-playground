@@ -15,7 +15,13 @@ mod device_data;
 mod surface_data;
 mod swapchain_data;
 
-pub struct Graphics {
+pub struct PipelineDescriptor<'a> {
+    pub pipeline_layout: vk::PipelineLayout,
+    pub vertex_input_info: vk::PipelineVertexInputStateCreateInfo<'a>,
+    pub shader_stages_info: &'a [vk::PipelineShaderStageCreateInfo<'a>],
+}
+
+pub struct Base {
     pub instance: Instance,
     pub surface_data: SurfaceData,
     pub device_data: DeviceData,
@@ -23,8 +29,8 @@ pub struct Graphics {
     pub swapchain_data: SwapchainData,
 }
 
-impl Graphics {
-    pub fn new(window: Arc<Window>) -> Result<Graphics, Box<dyn Error>> {
+impl Base {
+    pub fn new(window: Arc<Window>) -> Result<Base, Box<dyn Error>> {
         unsafe {
             let app_info =
                 vk::ApplicationInfo::default().api_version(vk::make_api_version(0, 1, 2, 283));
@@ -105,7 +111,7 @@ impl Graphics {
                 surface_format,
             )?;
 
-            Ok(Graphics {
+            Ok(Base {
                 instance,
                 surface_data,
                 device_data,
@@ -289,6 +295,90 @@ impl Graphics {
         }
     }
 
+    pub fn create_pipeline(
+        &self,
+        pipeline_desc: &PipelineDescriptor,
+    ) -> Result<vk::Pipeline, Box<dyn Error>> {
+        unsafe {
+            let device = &self.device_data.device;
+
+            let input_assembly_info = vk::PipelineInputAssemblyStateCreateInfo::default()
+                .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
+                .primitive_restart_enable(false);
+
+            let viewport_state_info = vk::PipelineViewportStateCreateInfo::default()
+                .viewport_count(1)
+                .scissor_count(1);
+
+            let rasterizer_info = vk::PipelineRasterizationStateCreateInfo::default()
+                .depth_clamp_enable(false)
+                .rasterizer_discard_enable(false)
+                .polygon_mode(vk::PolygonMode::FILL)
+                .line_width(1.0)
+                .cull_mode(vk::CullModeFlags::BACK)
+                .front_face(vk::FrontFace::CLOCKWISE)
+                .depth_bias_enable(false)
+                .depth_bias_constant_factor(0.0)
+                .depth_bias_clamp(0.0)
+                .depth_bias_slope_factor(0.0);
+
+            let multisampling_info = vk::PipelineMultisampleStateCreateInfo::default()
+                .sample_shading_enable(false)
+                .rasterization_samples(vk::SampleCountFlags::TYPE_1)
+                .min_sample_shading(1.0)
+                .alpha_to_coverage_enable(false)
+                .alpha_to_one_enable(false);
+
+            let color_blend_attachment_info = vk::PipelineColorBlendAttachmentState::default()
+                .color_write_mask(vk::ColorComponentFlags::RGBA)
+                .blend_enable(true)
+                .src_color_blend_factor(vk::BlendFactor::SRC_ALPHA)
+                .dst_color_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
+                .color_blend_op(vk::BlendOp::ADD)
+                .src_alpha_blend_factor(vk::BlendFactor::ONE)
+                .dst_alpha_blend_factor(vk::BlendFactor::ZERO)
+                .alpha_blend_op(vk::BlendOp::ADD);
+
+            let color_blending_info = vk::PipelineColorBlendStateCreateInfo::default()
+                .logic_op_enable(false)
+                .logic_op(vk::LogicOp::COPY)
+                .attachments(std::slice::from_ref(&color_blend_attachment_info))
+                .blend_constants([0.0, 0.0, 0.0, 0.0]);
+
+            let mut pipeline_rendering_info = vk::PipelineRenderingCreateInfo::default()
+                .color_attachment_formats(std::slice::from_ref(
+                    &self.device_data.surface_format.format,
+                ));
+
+            let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
+            let dynamic_state_info =
+                vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
+
+            let pipeline_info = vk::GraphicsPipelineCreateInfo::default()
+                .stages(&pipeline_desc.shader_stages_info)
+                .vertex_input_state(&pipeline_desc.vertex_input_info)
+                .input_assembly_state(&input_assembly_info)
+                .viewport_state(&viewport_state_info)
+                .rasterization_state(&rasterizer_info)
+                .multisample_state(&multisampling_info)
+                .color_blend_state(&color_blending_info)
+                .dynamic_state(&dynamic_state_info)
+                .layout(pipeline_desc.pipeline_layout)
+                .subpass(0)
+                .push_next(&mut pipeline_rendering_info);
+
+            let pipeline = device
+                .create_graphics_pipelines(
+                    vk::PipelineCache::null(),
+                    std::slice::from_ref(&pipeline_info),
+                    None,
+                )
+                .unwrap()[0];
+
+            Ok(pipeline)
+        }
+    }
+
     pub fn find_memory_type(
         &self,
         type_filter: u32,
@@ -312,7 +402,7 @@ impl Graphics {
     }
 }
 
-impl Drop for Graphics {
+impl Drop for Base {
     fn drop(&mut self) {
         unsafe {
             self.cleanup_swapchain();
