@@ -53,7 +53,7 @@ impl ApplicationHandler for Application {
     fn window_event(
         &mut self,
         event_loop: &ActiveEventLoop,
-        window_id: winit::window::WindowId,
+        _window_id: winit::window::WindowId,
         event: event::WindowEvent,
     ) {
         match event {
@@ -68,8 +68,8 @@ impl ApplicationHandler for Application {
             | WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::Resized(size) => match self.triangle {
                 Some(ref mut triangle) => {
-                    triangle.resize(size);
-                    triangle.draw_frame();
+                    let _ = triangle.resize(size);
+                    let _ = triangle.draw_frame();
                 }
                 _ => (),
             },
@@ -77,10 +77,10 @@ impl ApplicationHandler for Application {
         }
     }
 
-    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
         match self.triangle {
             Some(ref mut triangle) => {
-                triangle.draw_frame();
+                let _ = triangle.draw_frame();
             }
             _ => (),
         }

@@ -95,7 +95,7 @@ impl Base {
                 ref physical_device,
                 ref queue_family_index,
                 ref surface_format,
-                surface_resolution,
+                surface_extent,
                 ..
             } = device_data;
 
@@ -107,7 +107,7 @@ impl Base {
                 physical_device,
                 &surface_extension,
                 *surface,
-                surface_resolution,
+                surface_extent,
                 surface_format,
             )?;
 
@@ -134,7 +134,7 @@ impl Base {
                     height: size.height,
                     width: size.width,
                 },
-                None => self.device_data.surface_resolution,
+                None => self.device_data.surface_extent,
             };
 
             let surface_capabilities = self
@@ -145,12 +145,12 @@ impl Base {
                     self.surface_data.surface,
                 )?;
 
-            let surface_resolution = match surface_capabilities.current_extent.width {
+            let surface_extent = match surface_capabilities.current_extent.width {
                 u32::MAX => extent,
                 _ => surface_capabilities.current_extent,
             };
 
-            self.device_data.surface_resolution = surface_resolution;
+            self.device_data.surface_extent = surface_extent;
 
             self.swapchain_data = SwapchainData::new(
                 &self.instance,
@@ -158,7 +158,7 @@ impl Base {
                 &self.device_data.physical_device,
                 &self.surface_data.surface_extension,
                 self.surface_data.surface,
-                surface_resolution,
+                surface_extent,
                 &self.device_data.surface_format,
             )?;
 
@@ -188,7 +188,7 @@ impl Base {
         unsafe {
             let DeviceData {
                 ref device,
-                surface_resolution,
+                surface_extent,
                 ref dynamic_rendering_extension,
                 ..
             } = self.device_data;
@@ -209,13 +209,13 @@ impl Base {
             let viewport = vk::Viewport::default()
                 .x(0.0)
                 .y(0.0)
-                .width(surface_resolution.width as f32)
-                .height(surface_resolution.height as f32)
+                .width(surface_extent.width as f32)
+                .height(surface_extent.height as f32)
                 .min_depth(0.0)
                 .max_depth(1.0);
             device.cmd_set_viewport(command_buffer, 0, std::slice::from_ref(&viewport));
 
-            let scissor: vk::Rect2D = surface_resolution.into();
+            let scissor: vk::Rect2D = surface_extent.into();
             device.cmd_set_scissor(command_buffer, 0, std::slice::from_ref(&scissor));
 
             let color_attachments = [vk::RenderingAttachmentInfo::default()
@@ -232,8 +232,8 @@ impl Base {
                         .offset(vk::Offset2D::default())
                         .extent(
                             vk::Extent2D::default()
-                                .height(surface_resolution.height)
-                                .width(surface_resolution.width),
+                                .height(surface_extent.height)
+                                .width(surface_extent.width),
                         ),
                 )
                 .color_attachments(&color_attachments)
@@ -376,6 +376,80 @@ impl Base {
                 .unwrap()[0];
 
             Ok(pipeline)
+        }
+    }
+
+    pub fn create_buffer(
+        &self,
+        size: vk::DeviceSize,
+        usage: vk::BufferUsageFlags,
+        properties: vk::MemoryPropertyFlags,
+    ) -> Result<(vk::Buffer, vk::DeviceMemory), Box<dyn Error>> {
+        unsafe {
+            let device = &self.device_data.device;
+
+            let buffer_info = vk::BufferCreateInfo::default()
+                .size(size as u64)
+                .usage(usage)
+                .sharing_mode(vk::SharingMode::EXCLUSIVE);
+
+            let buffer = device.create_buffer(&buffer_info, None)?;
+
+            let memory_requirements = device.get_buffer_memory_requirements(buffer);
+
+            let memory_type_index =
+                self.find_memory_type(memory_requirements.memory_type_bits, properties)?;
+
+            let memory_alloc_info = vk::MemoryAllocateInfo::default()
+                .allocation_size(memory_requirements.size)
+                .memory_type_index(memory_type_index);
+
+            let buffer_memory = device.allocate_memory(&memory_alloc_info, None)?;
+
+            let _ = device.bind_buffer_memory(buffer, buffer_memory, 0);
+
+            Ok((buffer, buffer_memory))
+        }
+    }
+
+    pub fn copy_buffer(
+        &self,
+        command_pool: vk::CommandPool,
+        src_buffer: vk::Buffer,
+        dst_buffer: vk::Buffer,
+        size: vk::DeviceSize,
+    ) -> VkResult<()> {
+        unsafe {
+            let device = &self.device_data.device;
+
+            let alloc_info = vk::CommandBufferAllocateInfo::default()
+                .level(vk::CommandBufferLevel::PRIMARY)
+                .command_pool(command_pool)
+                .command_buffer_count(1);
+
+            let command_buffer = device.allocate_command_buffers(&alloc_info)?[0];
+
+            let begin_info = vk::CommandBufferBeginInfo::default()
+                .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+
+            device.begin_command_buffer(command_buffer, &begin_info)?;
+
+            let region = vk::BufferCopy::default()
+                .src_offset(0)
+                .dst_offset(0)
+                .size(size);
+
+            device.cmd_copy_buffer(command_buffer, src_buffer, dst_buffer, &[region]);
+            device.end_command_buffer(command_buffer)?;
+
+            let submit_info =
+                vk::SubmitInfo::default().command_buffers(std::slice::from_ref(&command_buffer));
+
+            device.queue_submit(self.present_queue, &[submit_info], vk::Fence::null())?;
+            device.queue_wait_idle(self.present_queue)?;
+            device.free_command_buffers(command_pool, std::slice::from_ref(&command_buffer));
+
+            Ok(())
         }
     }
 

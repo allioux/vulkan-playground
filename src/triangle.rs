@@ -143,41 +143,6 @@ impl Triangle {
                 shader_stages_info: &shader_stages_info,
             })?;
 
-            // VERTEX BUFFERS
-
-            let buffer_info = vk::BufferCreateInfo::default()
-                .size((size_of::<Vertex>() * vertices.len()) as u64)
-                .usage(vk::BufferUsageFlags::VERTEX_BUFFER)
-                .sharing_mode(vk::SharingMode::EXCLUSIVE);
-
-            let vertex_buffer = device.create_buffer(&buffer_info, None)?;
-
-            let memory_requirements = device.get_buffer_memory_requirements(vertex_buffer);
-
-            let memory_type_index = base.find_memory_type(
-                memory_requirements.memory_type_bits,
-                vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
-            )?;
-
-            let memory_alloc_info = vk::MemoryAllocateInfo::default()
-                .allocation_size(memory_requirements.size)
-                .memory_type_index(memory_type_index);
-
-            let vertex_buffer_memory = device.allocate_memory(&memory_alloc_info, None)?;
-
-            let _ = device.bind_buffer_memory(vertex_buffer, vertex_buffer_memory, 0);
-
-            let data = device.map_memory(
-                vertex_buffer_memory,
-                0,
-                buffer_info.size,
-                vk::MemoryMapFlags::empty(),
-            )?;
-
-            std::ptr::copy_nonoverlapping(vertices.as_ptr(), data.cast(), vertices.len());
-
-            let _ = device.unmap_memory(vertex_buffer_memory);
-
             // COMMAND POOL
 
             let command_pool_info = vk::CommandPoolCreateInfo::default()
@@ -192,6 +157,37 @@ impl Triangle {
                 .command_buffer_count(in_flight_frames);
 
             let command_buffers = device.allocate_command_buffers(&allocate_info)?;
+
+            // VERTEX BUFFERS
+
+            let buffer_size = (size_of::<Vertex>() * vertices.len()) as u64;
+
+            let (staging_buffer, staging_buffer_memory) = base.create_buffer(
+                buffer_size,
+                vk::BufferUsageFlags::TRANSFER_SRC,
+                vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+            )?;
+
+            let data = device.map_memory(
+                staging_buffer_memory,
+                0,
+                buffer_size,
+                vk::MemoryMapFlags::empty(),
+            )?;
+
+            std::ptr::copy_nonoverlapping(vertices.as_ptr(), data.cast(), vertices.len());
+
+            let _ = device.unmap_memory(staging_buffer_memory);
+
+            let (vertex_buffer, vertex_buffer_memory) = base.create_buffer(
+                buffer_size,
+                vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::VERTEX_BUFFER,
+                vk::MemoryPropertyFlags::DEVICE_LOCAL,
+            )?;
+
+            base.copy_buffer(command_pool, staging_buffer, vertex_buffer, buffer_size)?;
+            device.destroy_buffer(staging_buffer, None);
+            device.free_memory(staging_buffer_memory, None);
 
             // SYNC OBJECTS
 
@@ -318,8 +314,8 @@ impl Triangle {
         }
     }
 
-    pub fn resize(&mut self, window_size: PhysicalSize<u32>) {
-        self.base.recreate_swapchain(Some(window_size));
+    pub fn resize(&mut self, window_size: PhysicalSize<u32>) -> Result<(), Box<dyn Error>> {
+        self.base.recreate_swapchain(Some(window_size))
     }
 }
 

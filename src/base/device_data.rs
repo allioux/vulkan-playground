@@ -1,8 +1,8 @@
 use std::error::Error;
 
 use ash::khr::{
-    create_renderpass2, depth_stencil_resolve, dynamic_rendering,
-    maintenance2, multiview, surface, swapchain,
+    create_renderpass2, depth_stencil_resolve, dynamic_rendering, maintenance2, multiview, surface,
+    swapchain,
 };
 use ash::{vk, Device, Instance};
 
@@ -12,7 +12,7 @@ pub struct DeviceData {
     pub physical_device: vk::PhysicalDevice,
     pub queue_family_index: u32,
     pub surface_format: vk::SurfaceFormatKHR,
-    pub surface_resolution: vk::Extent2D,
+    pub surface_extent: vk::Extent2D,
 }
 
 impl DeviceData {
@@ -62,7 +62,7 @@ impl DeviceData {
                 ash::khr::portability_subset::NAME.as_ptr(),
             ];
 
-            let device_features = vk::PhysicalDeviceFeatures::default();
+            let _device_features = vk::PhysicalDeviceFeatures::default();
 
             let mut dynamic_rendering_feature =
                 vk::PhysicalDeviceDynamicRenderingFeatures::default().dynamic_rendering(true);
@@ -98,15 +98,7 @@ impl DeviceData {
             let surface_capabilities = surface_extension
                 .get_physical_device_surface_capabilities(physical_device, surface)?;
 
-            let mut desired_image_count = surface_capabilities.min_image_count + 1;
-
-            if surface_capabilities.max_image_count > 0
-                && desired_image_count > surface_capabilities.max_image_count
-            {
-                desired_image_count = surface_capabilities.max_image_count;
-            }
-
-            let surface_resolution = match surface_capabilities.current_extent.width {
+            let surface_extent = match surface_capabilities.current_extent.width {
                 u32::MAX => extent,
                 _ => surface_capabilities.current_extent,
             };
@@ -117,7 +109,7 @@ impl DeviceData {
                 physical_device,
                 queue_family_index: queue_family_index as u32,
                 surface_format,
-                surface_resolution,
+                surface_extent,
             })
         }
     }
