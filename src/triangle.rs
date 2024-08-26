@@ -178,7 +178,9 @@ impl Triangle {
 
             // DESCRIPTOR POOL
 
-            let pool_size = vk::DescriptorPoolSize::default().descriptor_count(in_flight_frames);
+            let pool_size = vk::DescriptorPoolSize::default()
+                .ty(vk::DescriptorType::UNIFORM_BUFFER)
+                .descriptor_count(in_flight_frames);
 
             let pool_info = vk::DescriptorPoolCreateInfo::default()
                 .pool_sizes(std::slice::from_ref(&pool_size))
