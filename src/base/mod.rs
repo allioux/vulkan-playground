@@ -183,10 +183,13 @@ impl Base {
         image: vk::Image,
         image_view: vk::ImageView,
         graphics_pipeline: vk::Pipeline,
+        pipeline_layout: vk::PipelineLayout,
         vertex_buffers: &[vk::Buffer],
         index_buffer: vk::Buffer,
         index_type: vk::IndexType,
         index_count: u32,
+        descriptor_sets: &[vk::DescriptorSet],
+        frame_index: u32,
     ) -> VkResult<()> {
         unsafe {
             let DeviceData {
@@ -267,6 +270,14 @@ impl Base {
             );
 
             dynamic_rendering_extension.cmd_begin_rendering(command_buffer, &rendering_info);
+            device.cmd_bind_descriptor_sets(
+                command_buffer,
+                vk::PipelineBindPoint::GRAPHICS,
+                pipeline_layout,
+                0,
+                &[descriptor_sets[frame_index as usize]],
+                &[],
+            );
             device.cmd_draw_indexed(command_buffer, index_count, 1, 0, 0, 0);
             dynamic_rendering_extension.cmd_end_rendering(command_buffer);
 
@@ -319,7 +330,7 @@ impl Base {
                 .polygon_mode(vk::PolygonMode::FILL)
                 .line_width(1.0)
                 .cull_mode(vk::CullModeFlags::BACK)
-                .front_face(vk::FrontFace::CLOCKWISE)
+                .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
                 .depth_bias_enable(false)
                 .depth_bias_constant_factor(0.0)
                 .depth_bias_clamp(0.0)

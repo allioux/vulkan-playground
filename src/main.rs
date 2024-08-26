@@ -65,7 +65,13 @@ impl ApplicationHandler for Application {
                     },
                 ..
             }
-            | WindowEvent::CloseRequested => event_loop.exit(),
+            | WindowEvent::CloseRequested => {
+                match std::mem::replace(&mut self.triangle, None) {
+                    Some(triangle) => drop(triangle),
+                    None => (),
+                }
+                event_loop.exit();
+            }
             WindowEvent::Resized(size) => match self.triangle {
                 Some(ref mut triangle) => {
                     let _ = triangle.resize(size);
