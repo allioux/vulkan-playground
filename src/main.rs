@@ -16,15 +16,15 @@ mod triangle;
 use triangle::Triangle;
 
 struct Application {
-    window: Option<Arc<Window>>,
     triangle: Option<Triangle>,
+    window: Option<Arc<Window>>,
 }
 
 impl Application {
     fn new() -> Application {
         Application {
-            window: None,
             triangle: None,
+            window: None,
         }
     }
 }
@@ -65,13 +65,7 @@ impl ApplicationHandler for Application {
                     },
                 ..
             }
-            | WindowEvent::CloseRequested => {
-                match std::mem::replace(&mut self.triangle, None) {
-                    Some(triangle) => drop(triangle),
-                    None => (),
-                }
-                event_loop.exit();
-            }
+            | WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::Resized(size) => match self.triangle {
                 Some(ref mut triangle) => {
                     let _ = triangle.resize(size);
