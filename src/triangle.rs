@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use ash::prelude::VkResult;
-use ash::util::read_spv;
+use ash::util::{read_spv, Align};
 use ash::vk::{self};
 use nalgebra_glm::{vec3, Mat4, Vec3};
 use winit::dpi::PhysicalSize;
@@ -42,6 +42,7 @@ impl Vertex {
     }
 }
 
+#[derive(Clone, Copy)]
 #[repr(C)]
 struct UniformBufferObject {
     model: Mat4,
@@ -68,7 +69,7 @@ pub struct Triangle {
     index_buffer_memory: vk::DeviceMemory,
     uniform_buffers: Vec<vk::Buffer>,
     uniform_buffers_memory: Vec<vk::DeviceMemory>,
-    uniform_buffers_mapped: Vec<*mut std::ffi::c_void>,
+    uniform_buffers_mapped: Vec<Align<UniformBufferObject>>,
     descriptor_pool: vk::DescriptorPool,
     descriptor_set_layout: vk::DescriptorSetLayout,
     descriptor_sets: Vec<vk::DescriptorSet>,
@@ -158,22 +159,26 @@ impl Triangle {
             let buffer_size = size_of::<UniformBufferObject>() as u64;
             let mut uniform_buffers = vec![];
             let mut uniform_buffers_memory = vec![];
-            let mut uniform_buffers_mapped: Vec<*mut std::ffi::c_void> = vec![];
+            let mut uniform_buffers_mapped: Vec<Align<UniformBufferObject>> = vec![];
             for _ in 0..in_flight_frames {
-                let (buffer, buffer_memory) = base.create_buffer(
+                let (buffer, buffer_memory, memory_requirements) = base.create_buffer(
                     buffer_size,
                     vk::BufferUsageFlags::UNIFORM_BUFFER,
                     vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
                 )?;
                 uniform_buffers.push(buffer);
                 uniform_buffers_memory.push(buffer_memory);
-                let map = base.device_data.device.map_memory(
+                let ptr = base.device_data.device.map_memory(
                     buffer_memory,
                     0,
                     buffer_size,
                     vk::MemoryMapFlags::empty(),
                 )?;
-                uniform_buffers_mapped.push(map);
+                uniform_buffers_mapped.push(Align::new(
+                    ptr,
+                    align_of::<UniformBufferObject>() as u64,
+                    memory_requirements.size,
+                ));
             }
 
             // DESCRIPTOR POOL
@@ -263,15 +268,13 @@ impl Triangle {
             let (vertex_buffer, vertex_buffer_memory) = base.create_and_populate_buffer(
                 command_pool,
                 vk::BufferUsageFlags::VERTEX_BUFFER,
-                vertices.as_ptr(),
-                vertices.len(),
+                vertices,
             )?;
 
             let (index_buffer, index_buffer_memory) = base.create_and_populate_buffer(
                 command_pool,
                 vk::BufferUsageFlags::INDEX_BUFFER,
-                indices.as_ptr(),
-                indices.len(),
+                indices,
             )?;
 
             // SYNC OBJECTS
@@ -386,7 +389,7 @@ impl Triangle {
                             / self.base.device_data.surface_extent.height as f32,
                         45.0_f32.to_radians(),
                         0.1,
-                        100.0,
+                        10.0,
                     );
 
                     let mut ubo = UniformBufferObject {
@@ -397,11 +400,7 @@ impl Triangle {
 
                     ubo.proj[(1, 1)] *= -1.;
 
-                    std::ptr::copy_nonoverlapping(
-                        &ubo,
-                        self.uniform_buffers_mapped[frame_index].cast(),
-                        1,
-                    );
+                    self.uniform_buffers_mapped[frame_index].copy_from_slice(&[ubo]);
 
                     let signal_semaphores = [self.render_finished_semaphores[frame_index]];
 

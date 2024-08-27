@@ -398,7 +398,7 @@ impl Base {
         size: vk::DeviceSize,
         usage: vk::BufferUsageFlags,
         properties: vk::MemoryPropertyFlags,
-    ) -> Result<(vk::Buffer, vk::DeviceMemory), Box<dyn Error>> {
+    ) -> Result<(vk::Buffer, vk::DeviceMemory, vk::MemoryRequirements), Box<dyn Error>> {
         unsafe {
             let device = &self.device_data.device;
 
@@ -422,7 +422,7 @@ impl Base {
 
             let _ = device.bind_buffer_memory(buffer, buffer_memory, 0);
 
-            Ok((buffer, buffer_memory))
+            Ok((buffer, buffer_memory, memory_requirements))
         }
     }
 
@@ -430,32 +430,31 @@ impl Base {
         &self,
         command_pool: vk::CommandPool,
         usage: vk::BufferUsageFlags,
-        src: *const T,
-        count: usize,
+        src: Vec<T>,
     ) -> Result<(vk::Buffer, vk::DeviceMemory), Box<dyn Error>> {
         unsafe {
             let device = &self.device_data.device;
 
-            let buffer_size = (count * size_of::<T>()) as u64;
+            let buffer_size = (src.len() * size_of::<T>()) as u64;
 
-            let (staging_buffer, staging_buffer_memory) = self.create_buffer(
+            let (staging_buffer, staging_buffer_memory, _) = self.create_buffer(
                 buffer_size,
                 vk::BufferUsageFlags::TRANSFER_SRC,
                 vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
             )?;
 
-            let data = device.map_memory(
+            let dst = device.map_memory(
                 staging_buffer_memory,
                 0,
                 buffer_size,
                 vk::MemoryMapFlags::empty(),
             )?;
-
-            std::ptr::copy_nonoverlapping(src, data.cast(), count);
+            
+            std::ptr::copy_nonoverlapping(src.as_ptr(), dst.cast(), src.len());
 
             let _ = device.unmap_memory(staging_buffer_memory);
 
-            let (buffer, buffer_memory) = self.create_buffer(
+            let (buffer, buffer_memory, _) = self.create_buffer(
                 buffer_size,
                 vk::BufferUsageFlags::TRANSFER_DST | usage,
                 vk::MemoryPropertyFlags::DEVICE_LOCAL,
