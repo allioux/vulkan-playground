@@ -1,9 +1,9 @@
 use std::error::Error;
 
-use ash::khr::{
-    surface, swapchain,
-};
-use ash::{vk, Device, Instance};
+use ash::khr::{surface, swapchain};
+use ash::{vk, Instance};
+
+use super::DeviceData;
 
 pub struct SwapchainData {
     pub swapchain_extension: swapchain::Device,
@@ -15,13 +15,14 @@ pub struct SwapchainData {
 impl SwapchainData {
     pub fn new(
         instance: &Instance,
-        device: &Device,
+        device_data: &DeviceData,
         &physical_device: &vk::PhysicalDevice,
         surface_extension: &surface::Instance,
         surface: vk::SurfaceKHR,
         surface_resolution: vk::Extent2D,
         surface_format: &vk::SurfaceFormatKHR,
     ) -> Result<SwapchainData, Box<dyn Error>> {
+        let device = &device_data.device;
         unsafe {
             let surface_capabilities = surface_extension
                 .get_physical_device_surface_capabilities(physical_device, surface)?;
@@ -68,29 +69,7 @@ impl SwapchainData {
 
             let image_views = images
                 .iter()
-                .map(|&image| {
-                    let info = vk::ImageViewCreateInfo::default()
-                        .image(image)
-                        .view_type(vk::ImageViewType::TYPE_2D)
-                        .format(surface_format.format)
-                        .components(
-                            vk::ComponentMapping::default()
-                                .r(vk::ComponentSwizzle::IDENTITY)
-                                .g(vk::ComponentSwizzle::IDENTITY)
-                                .b(vk::ComponentSwizzle::IDENTITY)
-                                .a(vk::ComponentSwizzle::IDENTITY),
-                        )
-                        .subresource_range(
-                            vk::ImageSubresourceRange::default()
-                                .aspect_mask(vk::ImageAspectFlags::COLOR)
-                                .base_mip_level(0)
-                                .level_count(1)
-                                .base_array_layer(0)
-                                .layer_count(1),
-                        );
-
-                    device.create_image_view(&info, None)
-                })
+                .map(|&image| device_data.create_image_view(image, surface_format.format))
                 .collect::<Result<_, _>>()?;
 
             Ok(SwapchainData {

@@ -6,11 +6,14 @@ use std::time::Instant;
 use ash::prelude::VkResult;
 use ash::util::{read_spv, Align};
 use ash::vk::{self};
+use image::{EncodableLayout, GenericImageView, ImageReader};
 use nalgebra_glm::{vec3, Mat4, Vec3};
 use winit::dpi::PhysicalSize;
 use winit::window::Window;
 
-use crate::base::{Base, DeviceData, PipelineDescriptor};
+use crate::base::{
+    Base, DeviceData, ImageDescriptor, PipelineDescriptor, TransitionImageLayoutDesc,
+};
 
 #[repr(C)]
 struct Vertex {
@@ -73,6 +76,9 @@ pub struct Triangle {
     descriptor_pool: vk::DescriptorPool,
     descriptor_set_layout: vk::DescriptorSetLayout,
     descriptor_sets: Vec<vk::DescriptorSet>,
+    image: vk::Image,
+    image_memory: vk::DeviceMemory,
+    image_view: vk::ImageView,
     instant: Instant,
 }
 
@@ -263,6 +269,78 @@ impl Triangle {
 
             let command_buffers = device.allocate_command_buffers(&allocate_info)?;
 
+            // TEXTURE IMAGE
+
+            let image = ImageReader::open("textures/statue.jpg")?.decode()?;
+            let image_data = image.to_rgba8();
+            let (width, height) = image.dimensions();
+            let image_extent = vk::Extent3D {
+                height,
+                width,
+                depth: 1,
+            };
+            let buffer_size = (height * width * 4 * size_of::<u8>() as u32) as u64;
+
+            let (staging_buffer, staging_buffer_memory, _) = base.create_buffer(
+                buffer_size,
+                vk::BufferUsageFlags::TRANSFER_SRC,
+                vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+            )?;
+
+            let ptr = device.map_memory(
+                staging_buffer_memory,
+                0,
+                buffer_size,
+                vk::MemoryMapFlags::empty(),
+            )?;
+
+            let mut image_slice = Align::new(ptr, align_of::<u8>() as u64, buffer_size);
+            image_slice.copy_from_slice(image_data.as_bytes());
+            device.unmap_memory(staging_buffer_memory);
+
+            let (image, image_memory, _) = base.create_image(ImageDescriptor {
+                extent: image_extent,
+                format: vk::Format::R8G8B8A8_SRGB,
+                tiling: vk::ImageTiling::OPTIMAL,
+                usage: vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED,
+                properties: vk::MemoryPropertyFlags::DEVICE_LOCAL,
+            })?;
+
+            let command_buffer = base.begin_single_time_commands(command_pool)?;
+            base.transition_image_layout(
+                command_buffer,
+                image,
+                TransitionImageLayoutDesc::from_layouts(
+                    vk::Format::R8G8B8A8_SRGB,
+                    vk::ImageLayout::UNDEFINED,
+                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                )?,
+            );
+            base.end_single_time_commands(command_pool, command_buffer)?;
+
+            base.copy_buffer_to_image(command_pool, staging_buffer, image, image_extent)?;
+
+            let command_buffer = base.begin_single_time_commands(command_pool)?;
+            base.transition_image_layout(
+                command_buffer,
+                image,
+                TransitionImageLayoutDesc::from_layouts(
+                    vk::Format::R8G8B8A8_SRGB,
+                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                    vk::ImageLayout::READ_ONLY_OPTIMAL,
+                )?,
+            );
+            base.end_single_time_commands(command_pool, command_buffer)?;
+
+            device.destroy_buffer(staging_buffer, None);
+            device.free_memory(staging_buffer_memory, None);
+
+            // IMAGE VIEW
+
+            let image_view = base
+                .device_data
+                .create_image_view(image, vk::Format::R8G8B8A8_SRGB)?;
+
             // VERTEX & INDEX BUFFERS
 
             let (vertex_buffer, vertex_buffer_memory) = base.create_and_populate_buffer(
@@ -317,6 +395,9 @@ impl Triangle {
                 descriptor_pool,
                 descriptor_set_layout,
                 descriptor_sets,
+                image,
+                image_memory,
+                image_view,
                 instant: Instant::now(),
             })
         }
@@ -474,6 +555,10 @@ impl Drop for Triangle {
             for &buffer_memory in &self.uniform_buffers_memory {
                 device.free_memory(buffer_memory, None);
             }
+
+            device.destroy_image_view(self.image_view, None);
+            device.destroy_image(self.image, None);
+            device.free_memory(self.image_memory, None);
 
             for &fence in &self.in_flight_fences {
                 device.destroy_fence(fence, None)

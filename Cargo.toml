@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 ash = { version = "0.38.0", features = ["linked"] }
 ash-window = "0.13.0"
+image = "0.25.2"
 nalgebra-glm = "0.19.0"
 spirv-reflect = "0.2.3"
 winit = "0.30.5"

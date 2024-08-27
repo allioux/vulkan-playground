@@ -1,25 +1,23 @@
 use std::error::Error;
 
-use ash::khr::{
-    create_renderpass2, depth_stencil_resolve, dynamic_rendering, maintenance2, multiview, surface,
-    swapchain,
-};
+use ash::khr::{self};
+use ash::prelude::VkResult;
 use ash::{vk, Device, Instance};
 
 pub struct DeviceData {
     pub device: Device,
-    pub dynamic_rendering_extension: dynamic_rendering::Device,
     pub physical_device: vk::PhysicalDevice,
     pub queue_family_index: u32,
-    pub surface_format: vk::SurfaceFormatKHR,
     pub surface_extent: vk::Extent2D,
+    pub surface_format_khr: vk::SurfaceFormatKHR,
+    pub dynamic_rendering_khr: khr::dynamic_rendering::Device,
 }
 
 impl DeviceData {
     pub fn new(
         instance: &Instance,
         surface: vk::SurfaceKHR,
-        surface_extension: &surface::Instance,
+        surface_extension: &khr::surface::Instance,
         extent: vk::Extent2D,
     ) -> Result<DeviceData, Box<dyn Error>> {
         unsafe {
@@ -52,20 +50,22 @@ impl DeviceData {
                 .ok_or("Could not find a suitable device.")?;
 
             let device_extension_names_raw = [
-                swapchain::NAME.as_ptr(),
-                multiview::NAME.as_ptr(),
-                maintenance2::NAME.as_ptr(),
-                create_renderpass2::NAME.as_ptr(),
-                depth_stencil_resolve::NAME.as_ptr(),
-                dynamic_rendering::NAME.as_ptr(),
+                khr::swapchain::NAME.as_ptr(),
+                khr::multiview::NAME.as_ptr(),
+                khr::maintenance2::NAME.as_ptr(),
+                khr::create_renderpass2::NAME.as_ptr(),
+                khr::depth_stencil_resolve::NAME.as_ptr(),
+                khr::dynamic_rendering::NAME.as_ptr(),
+                khr::synchronization2::NAME.as_ptr(),
                 #[cfg(any(target_os = "macos"))]
                 ash::khr::portability_subset::NAME.as_ptr(),
             ];
 
-            let _device_features = vk::PhysicalDeviceFeatures::default();
-
             let mut dynamic_rendering_feature =
                 vk::PhysicalDeviceDynamicRenderingFeatures::default().dynamic_rendering(true);
+
+            let mut synchronization2_feature =
+                vk::PhysicalDeviceSynchronization2Features::default().synchronization2(true);
 
             let queue_create_info = vk::DeviceQueueCreateInfo::default()
                 .queue_family_index(queue_family_index as u32)
@@ -74,18 +74,19 @@ impl DeviceData {
             let device_create_info = vk::DeviceCreateInfo::default()
                 .queue_create_infos(std::slice::from_ref(&queue_create_info))
                 .enabled_extension_names(&device_extension_names_raw)
-                .push_next(&mut dynamic_rendering_feature);
+                .push_next(&mut dynamic_rendering_feature)
+                .push_next(&mut synchronization2_feature);
 
             let device = instance.create_device(physical_device, &device_create_info, None)?;
 
-            let dynamic_rendering_extension = dynamic_rendering::Device::new(&instance, &device);
+            let dynamic_rendering_khr = khr::dynamic_rendering::Device::new(&instance, &device);
 
             let surface_formats =
                 surface_extension.get_physical_device_surface_formats(physical_device, surface)?;
 
             let default_format = surface_formats[0].clone();
 
-            let surface_format: vk::SurfaceFormatKHR = *surface_formats
+            let surface_format_khr: vk::SurfaceFormatKHR = *surface_formats
                 .into_iter()
                 .filter(|surface_format| {
                     surface_format.format == vk::Format::B8G8R8A8_SRGB
@@ -105,12 +106,33 @@ impl DeviceData {
 
             Ok(DeviceData {
                 device,
-                dynamic_rendering_extension,
                 physical_device,
                 queue_family_index: queue_family_index as u32,
-                surface_format,
                 surface_extent,
+                surface_format_khr,
+                dynamic_rendering_khr,
             })
         }
+    }
+
+    pub fn create_image_view(
+        &self,
+        image: vk::Image,
+        format: vk::Format,
+    ) -> VkResult<vk::ImageView> {
+        let subresource_range = vk::ImageSubresourceRange::default()
+            .aspect_mask(vk::ImageAspectFlags::COLOR)
+            .base_mip_level(0)
+            .level_count(1)
+            .base_array_layer(0)
+            .layer_count(1);
+
+        let image_view_info = vk::ImageViewCreateInfo::default()
+            .image(image)
+            .view_type(vk::ImageViewType::TYPE_2D)
+            .format(format)
+            .subresource_range(subresource_range);
+
+        unsafe { self.device.create_image_view(&image_view_info, None) }
     }
 }

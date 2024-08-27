@@ -21,6 +21,85 @@ pub struct PipelineDescriptor<'a> {
     pub shader_stages_info: &'a [vk::PipelineShaderStageCreateInfo<'a>],
 }
 
+pub struct ImageDescriptor {
+    pub extent: vk::Extent3D,
+    pub format: vk::Format,
+    pub tiling: vk::ImageTiling,
+    pub usage: vk::ImageUsageFlags,
+    pub properties: vk::MemoryPropertyFlags,
+}
+
+#[derive(Default)]
+pub struct TransitionImageLayoutDesc {
+    pub format: vk::Format,
+    pub old_layout: vk::ImageLayout,
+    pub new_layout: vk::ImageLayout,
+    pub src_access_mask: vk::AccessFlags,
+    pub dst_access_mask: vk::AccessFlags,
+    pub src_stage_mask: vk::PipelineStageFlags,
+    pub dst_stage_mask: vk::PipelineStageFlags,
+}
+
+impl TransitionImageLayoutDesc {
+    pub fn from_layouts(
+        format: vk::Format,
+        old_layout: vk::ImageLayout,
+        new_layout: vk::ImageLayout,
+    ) -> Result<TransitionImageLayoutDesc, Box<dyn Error>> {
+        if old_layout == vk::ImageLayout::UNDEFINED
+            && new_layout == vk::ImageLayout::TRANSFER_DST_OPTIMAL
+        {
+            Ok(TransitionImageLayoutDesc {
+                format,
+                old_layout,
+                new_layout,
+                dst_access_mask: vk::AccessFlags::TRANSFER_WRITE,
+                src_stage_mask: vk::PipelineStageFlags::TOP_OF_PIPE,
+                dst_stage_mask: vk::PipelineStageFlags::TRANSFER,
+                ..Default::default()
+            })
+        } else if old_layout == vk::ImageLayout::TRANSFER_DST_OPTIMAL
+            && new_layout == vk::ImageLayout::READ_ONLY_OPTIMAL
+        {
+            Ok(TransitionImageLayoutDesc {
+                format,
+                old_layout,
+                new_layout,
+                src_access_mask: vk::AccessFlags::TRANSFER_WRITE,
+                dst_access_mask: vk::AccessFlags::SHADER_READ,
+                src_stage_mask: vk::PipelineStageFlags::TRANSFER,
+                dst_stage_mask: vk::PipelineStageFlags::FRAGMENT_SHADER,
+            })
+        } else if old_layout == vk::ImageLayout::UNDEFINED
+            && new_layout == vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL
+        {
+            Ok(TransitionImageLayoutDesc {
+                format,
+                old_layout,
+                new_layout,
+                dst_access_mask: vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+                src_stage_mask: vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+                dst_stage_mask: vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                ..Default::default()
+            })
+        } else if old_layout == vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL
+            && new_layout == vk::ImageLayout::PRESENT_SRC_KHR
+        {
+            Ok(TransitionImageLayoutDesc {
+                format,
+                old_layout,
+                new_layout,
+                src_access_mask: vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+                src_stage_mask: vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                dst_stage_mask: vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+                ..Default::default()
+            })
+        } else {
+            Err("Image layout transition not supported.".into())
+        }
+    }
+}
+
 pub struct Base {
     pub instance: Instance,
     pub surface_data: SurfaceData,
@@ -78,7 +157,6 @@ impl Base {
             let SurfaceData {
                 ref surface,
                 ref surface_extension,
-                ..
             } = surface_data;
 
             let window_size = window.inner_size();
@@ -94,7 +172,7 @@ impl Base {
                 ref device,
                 ref physical_device,
                 ref queue_family_index,
-                ref surface_format,
+                ref surface_format_khr,
                 surface_extent,
                 ..
             } = device_data;
@@ -103,12 +181,12 @@ impl Base {
 
             let swapchain_data = SwapchainData::new(
                 &instance,
-                &device,
+                &device_data,
                 physical_device,
                 &surface_extension,
                 *surface,
                 surface_extent,
-                surface_format,
+                surface_format_khr,
             )?;
 
             Ok(Base {
@@ -154,12 +232,12 @@ impl Base {
 
             self.swapchain_data = SwapchainData::new(
                 &self.instance,
-                &self.device_data.device,
+                &self.device_data,
                 &self.device_data.physical_device,
                 &self.surface_data.surface_extension,
                 self.surface_data.surface,
                 surface_extent,
-                &self.device_data.surface_format,
+                &self.device_data.surface_format_khr,
             )?;
 
             Ok(())
@@ -190,12 +268,12 @@ impl Base {
         index_count: u32,
         descriptor_sets: &[vk::DescriptorSet],
         frame_index: u32,
-    ) -> VkResult<()> {
+    ) -> Result<(), Box<dyn Error>> {
         unsafe {
             let DeviceData {
                 ref device,
                 surface_extent,
-                ref dynamic_rendering_extension,
+                ref dynamic_rendering_khr,
                 ..
             } = self.device_data;
 
@@ -245,31 +323,17 @@ impl Base {
                 .color_attachments(&color_attachments)
                 .layer_count(1);
 
-            let image_memory_barrier = vk::ImageMemoryBarrier::default()
-                .dst_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
-                .old_layout(vk::ImageLayout::UNDEFINED)
-                .new_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-                .image(image)
-                .subresource_range(
-                    vk::ImageSubresourceRange::default()
-                        .aspect_mask(vk::ImageAspectFlags::COLOR)
-                        .base_mip_level(0)
-                        .level_count(1)
-                        .base_array_layer(0)
-                        .layer_count(1),
-                );
-
-            device.cmd_pipeline_barrier(
+            self.transition_image_layout(
                 command_buffer,
-                vk::PipelineStageFlags::BOTTOM_OF_PIPE,
-                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-                vk::DependencyFlags::empty(),
-                &[],
-                &[],
-                std::slice::from_ref(&image_memory_barrier),
+                image,
+                TransitionImageLayoutDesc::from_layouts(
+                    vk::Format::R8G8B8A8_SRGB,
+                    vk::ImageLayout::UNDEFINED,
+                    vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+                )?,
             );
 
-            dynamic_rendering_extension.cmd_begin_rendering(command_buffer, &rendering_info);
+            dynamic_rendering_khr.cmd_begin_rendering(command_buffer, &rendering_info);
             device.cmd_bind_descriptor_sets(
                 command_buffer,
                 vk::PipelineBindPoint::GRAPHICS,
@@ -279,33 +343,21 @@ impl Base {
                 &[],
             );
             device.cmd_draw_indexed(command_buffer, index_count, 1, 0, 0, 0);
-            dynamic_rendering_extension.cmd_end_rendering(command_buffer);
+            dynamic_rendering_khr.cmd_end_rendering(command_buffer);
 
-            let image_memory_barrier = vk::ImageMemoryBarrier::default()
-                .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
-                .old_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-                .new_layout(vk::ImageLayout::PRESENT_SRC_KHR)
-                .image(image)
-                .subresource_range(
-                    vk::ImageSubresourceRange::default()
-                        .aspect_mask(vk::ImageAspectFlags::COLOR)
-                        .base_mip_level(0)
-                        .level_count(1)
-                        .base_array_layer(0)
-                        .layer_count(1),
-                );
-
-            device.cmd_pipeline_barrier(
+            self.transition_image_layout(
                 command_buffer,
-                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-                vk::PipelineStageFlags::BOTTOM_OF_PIPE,
-                vk::DependencyFlags::empty(),
-                &[],
-                &[],
-                std::slice::from_ref(&image_memory_barrier),
+                image,
+                TransitionImageLayoutDesc::from_layouts(
+                    vk::Format::R8G8B8A8_SRGB,
+                    vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+                    vk::ImageLayout::PRESENT_SRC_KHR,
+                )?,
             );
 
-            device.end_command_buffer(command_buffer)
+            device.end_command_buffer(command_buffer)?;
+
+            Ok(())
         }
     }
 
@@ -361,7 +413,7 @@ impl Base {
 
             let mut pipeline_rendering_info = vk::PipelineRenderingCreateInfo::default()
                 .color_attachment_formats(std::slice::from_ref(
-                    &self.device_data.surface_format.format,
+                    &self.device_data.surface_format_khr.format,
                 ));
 
             let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
@@ -419,10 +471,53 @@ impl Base {
                 .memory_type_index(memory_type_index);
 
             let buffer_memory = device.allocate_memory(&memory_alloc_info, None)?;
-
-            let _ = device.bind_buffer_memory(buffer, buffer_memory, 0);
+            device.bind_buffer_memory(buffer, buffer_memory, 0)?;
 
             Ok((buffer, buffer_memory, memory_requirements))
+        }
+    }
+
+    pub fn create_image(
+        &self,
+        image_descriptor: ImageDescriptor,
+    ) -> Result<(vk::Image, vk::DeviceMemory, vk::MemoryRequirements), Box<dyn Error>> {
+        unsafe {
+            let device = &self.device_data.device;
+
+            let ImageDescriptor {
+                extent,
+                tiling,
+                format,
+                usage,
+                properties,
+            } = image_descriptor;
+
+            let image_info = vk::ImageCreateInfo::default()
+                .image_type(vk::ImageType::TYPE_2D)
+                .extent(extent)
+                .mip_levels(1)
+                .array_layers(1)
+                .format(format)
+                .tiling(tiling)
+                .initial_layout(vk::ImageLayout::UNDEFINED)
+                .usage(usage)
+                .sharing_mode(vk::SharingMode::EXCLUSIVE)
+                .samples(vk::SampleCountFlags::TYPE_1);
+
+            let image = device.create_image(&image_info, None)?;
+
+            let memory_requirements = device.get_image_memory_requirements(image);
+
+            let allocate_info = vk::MemoryAllocateInfo::default()
+                .allocation_size(memory_requirements.size)
+                .memory_type_index(
+                    self.find_memory_type(memory_requirements.memory_type_bits, properties)?,
+                );
+
+            let image_memory = device.allocate_memory(&allocate_info, None)?;
+            device.bind_image_memory(image, image_memory, 0)?;
+
+            Ok((image, image_memory, memory_requirements))
         }
     }
 
@@ -449,10 +544,10 @@ impl Base {
                 buffer_size,
                 vk::MemoryMapFlags::empty(),
             )?;
-            
+
             std::ptr::copy_nonoverlapping(src.as_ptr(), dst.cast(), src.len());
 
-            let _ = device.unmap_memory(staging_buffer_memory);
+            device.unmap_memory(staging_buffer_memory);
 
             let (buffer, buffer_memory, _) = self.create_buffer(
                 buffer_size,
@@ -468,13 +563,10 @@ impl Base {
         }
     }
 
-    pub fn copy_buffer(
+    pub fn begin_single_time_commands(
         &self,
         command_pool: vk::CommandPool,
-        src_buffer: vk::Buffer,
-        dst_buffer: vk::Buffer,
-        size: vk::DeviceSize,
-    ) -> VkResult<()> {
+    ) -> VkResult<vk::CommandBuffer> {
         unsafe {
             let device = &self.device_data.device;
 
@@ -490,12 +582,17 @@ impl Base {
 
             device.begin_command_buffer(command_buffer, &begin_info)?;
 
-            let region = vk::BufferCopy::default()
-                .src_offset(0)
-                .dst_offset(0)
-                .size(size);
+            Ok(command_buffer)
+        }
+    }
 
-            device.cmd_copy_buffer(command_buffer, src_buffer, dst_buffer, &[region]);
+    pub fn end_single_time_commands(
+        &self,
+        command_pool: vk::CommandPool,
+        command_buffer: vk::CommandBuffer,
+    ) -> VkResult<()> {
+        unsafe {
+            let device = &self.device_data.device;
             device.end_command_buffer(command_buffer)?;
 
             let submit_info =
@@ -507,6 +604,113 @@ impl Base {
 
             Ok(())
         }
+    }
+
+    pub fn copy_buffer(
+        &self,
+        command_pool: vk::CommandPool,
+        src_buffer: vk::Buffer,
+        dst_buffer: vk::Buffer,
+        size: vk::DeviceSize,
+    ) -> VkResult<()> {
+        unsafe {
+            let command_buffer = self.begin_single_time_commands(command_pool)?;
+
+            let region = vk::BufferCopy::default()
+                .src_offset(0)
+                .dst_offset(0)
+                .size(size);
+
+            self.device_data.device.cmd_copy_buffer(
+                command_buffer,
+                src_buffer,
+                dst_buffer,
+                &[region],
+            );
+
+            self.end_single_time_commands(command_pool, command_buffer)
+        }
+    }
+
+    pub fn transition_image_layout(
+        &self,
+        command_buffer: vk::CommandBuffer,
+        image: vk::Image,
+        transition_image_layout_desc: TransitionImageLayoutDesc,
+    ) -> () {
+        let TransitionImageLayoutDesc {
+            old_layout,
+            new_layout,
+            src_access_mask,
+            dst_access_mask,
+            src_stage_mask,
+            dst_stage_mask,
+            ..
+        } = transition_image_layout_desc;
+
+        let subresource_range = vk::ImageSubresourceRange::default()
+            .aspect_mask(vk::ImageAspectFlags::COLOR)
+            .base_mip_level(0)
+            .level_count(1)
+            .base_array_layer(0)
+            .layer_count(1);
+
+        let image_memory_barrier = vk::ImageMemoryBarrier::default()
+            .dst_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
+            .old_layout(old_layout)
+            .new_layout(new_layout)
+            .src_access_mask(src_access_mask)
+            .dst_access_mask(dst_access_mask)
+            .image(image)
+            .subresource_range(subresource_range);
+
+        unsafe {
+            self.device_data.device.cmd_pipeline_barrier(
+                command_buffer,
+                src_stage_mask,
+                dst_stage_mask,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                std::slice::from_ref(&image_memory_barrier),
+            )
+        }
+    }
+
+    pub fn copy_buffer_to_image(
+        &self,
+        command_pool: vk::CommandPool,
+        buffer: vk::Buffer,
+        image: vk::Image,
+        image_extent: vk::Extent3D,
+    ) -> VkResult<()> {
+        let command_buffer = self.begin_single_time_commands(command_pool)?;
+
+        let image_subresource = vk::ImageSubresourceLayers::default()
+            .aspect_mask(vk::ImageAspectFlags::COLOR)
+            .mip_level(0)
+            .base_array_layer(0)
+            .layer_count(1);
+
+        let region = vk::BufferImageCopy::default()
+            .buffer_offset(0)
+            .buffer_row_length(0)
+            .buffer_image_height(0)
+            .image_subresource(image_subresource)
+            .image_offset(vk::Offset3D { x: 0, y: 0, z: 0 })
+            .image_extent(image_extent);
+
+        unsafe {
+            self.device_data.device.cmd_copy_buffer_to_image(
+                command_buffer,
+                buffer,
+                image,
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                &[region],
+            );
+        }
+
+        self.end_single_time_commands(command_pool, command_buffer)
     }
 
     pub fn find_memory_type(
