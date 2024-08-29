@@ -105,52 +105,12 @@ impl Triangle {
     }
 
     pub fn new(window: Arc<Window>) -> Result<Triangle, Box<dyn Error>> {
+        let texture_path = "textures/viking_room.png";
+        let model_path = "models/viking_room.obj";
+
         let in_flight_frames = 2;
 
-        let vertices = vec![
-            Vertex {
-                pos: vec3(-0.5, -0.5, 0.0),
-                color: vec3(1.0, 0.0, 0.0),
-                tex_coord: vec2(1.0, 0.0),
-            },
-            Vertex {
-                pos: vec3(0.5, -0.5, 0.0),
-                color: vec3(0.0, 1.0, 0.0),
-                tex_coord: vec2(0.0, 0.0),
-            },
-            Vertex {
-                pos: vec3(0.5, 0.5, 0.0),
-                color: vec3(0.0, 0.0, 1.0),
-                tex_coord: vec2(0.0, 1.0),
-            },
-            Vertex {
-                pos: vec3(-0.5, 0.5, 0.0),
-                color: vec3(1.0, 1.0, 1.0),
-                tex_coord: vec2(1.0, 1.0),
-            },
-            Vertex {
-                pos: vec3(-0.5, -0.5, -0.5),
-                color: vec3(1.0, 0.0, 0.0),
-                tex_coord: vec2(1.0, 0.0),
-            },
-            Vertex {
-                pos: vec3(0.5, -0.5, -0.5),
-                color: vec3(0.0, 1.0, 0.0),
-                tex_coord: vec2(0.0, 0.0),
-            },
-            Vertex {
-                pos: vec3(0.5, 0.5, -0.5),
-                color: vec3(0.0, 0.0, 1.0),
-                tex_coord: vec2(0.0, 1.0),
-            },
-            Vertex {
-                pos: vec3(-0.5, 0.5, -0.5),
-                color: vec3(1.0, 1.0, 1.0),
-                tex_coord: vec2(1.0, 1.0),
-            },
-        ];
-
-        let indices: Vec<u16> = vec![0, 1, 2, 2, 3, 0, 4, 5, 6, 6, 7, 4];
+        let (vertices, indices) = Self::load_model(model_path);
 
         unsafe {
             let base = Base::new(window)?;
@@ -239,24 +199,11 @@ impl Triangle {
 
             // DEPTH IMAGE
 
-            let depth_format = base.find_depth_format()?;
-            let (depth_image, depth_image_memory, _) = base.create_image(ImageDescriptor {
-                extent: base.device_data.surface_extent.into(),
-                format: depth_format,
-                tiling: vk::ImageTiling::OPTIMAL,
-                properties: vk::MemoryPropertyFlags::DEVICE_LOCAL,
-                usage: vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT,
-            })?;
-
-            let depth_image_view = base.device_data.create_image_view(
-                depth_image,
-                depth_format,
-                vk::ImageAspectFlags::DEPTH,
-            )?;
+            let (depth_image, depth_image_view, depth_image_memory) = base.create_depth_image()?;
 
             // TEXTURE IMAGE
 
-            let image = ImageReader::open("textures/statue.jpg")?.decode()?;
+            let image = ImageReader::open(texture_path)?.decode()?;
             let image_data = image.to_rgba8();
             let (width, height) = image.dimensions();
             let image_extent = vk::Extent3D {
@@ -517,6 +464,42 @@ impl Triangle {
         }
     }
 
+    fn load_model(file: &str) -> (Vec<Vertex>, Vec<u32>) {
+        let (models, _) = tobj::load_obj(file, &tobj::LoadOptions::default())
+            .expect("Failed to load model file.");
+
+        let mut vertices = vec![];
+        let mut indices = vec![];
+
+        let vertex_offset = 0;
+        let index_offset = 0;
+
+        for model in models {
+            let index_offset = vertices.len() as u32;
+
+            for &index in &model.mesh.indices {
+                indices.push(index + index_offset);
+            }
+
+            for i in 0..model.mesh.positions.len() / 3 {
+                vertices.push(Vertex {
+                    pos: vec3(
+                        model.mesh.positions[3 * i],
+                        model.mesh.positions[3 * i + 1],
+                        model.mesh.positions[3 * i + 2],
+                    ),
+                    tex_coord: vec2(
+                        model.mesh.texcoords[2 * i],
+                        1.0 - model.mesh.texcoords[2 * i + 1],
+                    ),
+                    color: vec3(1.0, 1.0, 1.0),
+                })
+            }
+        }
+
+        (vertices, indices)
+    }
+
     pub fn draw_frame(&mut self) -> Result<(), Box<dyn Error>> {
         let frame_index = self.current_frame as usize;
         let DeviceData { device, .. } = &self.base.device_data;
@@ -559,7 +542,7 @@ impl Triangle {
                             self.pipeline_layout,
                             &[self.vertex_buffer],
                             self.index_buffer,
-                            vk::IndexType::UINT16,
+                            vk::IndexType::UINT32,
                             self.index_count,
                             &self.descriptor_sets,
                             frame_index as u32,

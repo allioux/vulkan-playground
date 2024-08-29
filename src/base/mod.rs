@@ -4,6 +4,7 @@ use std::{error::Error, ffi};
 use ash::khr::get_physical_device_properties2;
 use ash::prelude::VkResult;
 use ash::{ext::debug_utils, vk, Entry, Instance};
+use simple_error::bail;
 use winit::dpi::PhysicalSize;
 use winit::{raw_window_handle::HasDisplayHandle, window::Window};
 
@@ -395,7 +396,7 @@ impl Base {
                 .polygon_mode(vk::PolygonMode::FILL)
                 .line_width(1.0)
                 .cull_mode(vk::CullModeFlags::NONE)
-                //.front_face(vk::FrontFace::COUNTER_CLOCKWISE)
+                .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
                 .depth_bias_enable(false)
                 .depth_bias_constant_factor(0.0)
                 .depth_bias_clamp(0.0)
@@ -762,7 +763,7 @@ impl Base {
         candidates: Vec<vk::Format>,
         tiling: vk::ImageTiling,
         features: vk::FormatFeatureFlags,
-    ) -> Result<vk::Format, String> {
+    ) -> Result<vk::Format, Box<dyn Error>> {
         unsafe {
             for candidate in candidates {
                 let props = self.instance.get_physical_device_format_properties(
@@ -780,11 +781,11 @@ impl Base {
                     return Ok(candidate);
                 }
             }
-            Err("Failed to find a supported format.".to_string())
+            bail!("Failed to find a supported format.")
         }
     }
 
-    pub fn find_depth_format(&self) -> Result<vk::Format, String> {
+    pub fn find_depth_format(&self) -> Result<vk::Format, Box<dyn Error>> {
         let candidates = vec![
             vk::Format::D32_SFLOAT,
             vk::Format::D32_SFLOAT_S8_UINT,
@@ -799,6 +800,27 @@ impl Base {
 
     pub fn has_stencil_component(format: vk::Format) -> bool {
         format == vk::Format::D32_SFLOAT_S8_UINT || format == vk::Format::D24_UNORM_S8_UINT
+    }
+
+    pub fn create_depth_image(
+        &self,
+    ) -> Result<(vk::Image, vk::ImageView, vk::DeviceMemory), Box<dyn Error>> {
+        let depth_format = self.find_depth_format()?;
+        let (depth_image, depth_image_memory, _) = self.create_image(ImageDescriptor {
+            extent: self.device_data.surface_extent.into(),
+            format: depth_format,
+            tiling: vk::ImageTiling::OPTIMAL,
+            properties: vk::MemoryPropertyFlags::DEVICE_LOCAL,
+            usage: vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT,
+        })?;
+
+        let depth_image_view = self.device_data.create_image_view(
+            depth_image,
+            depth_format,
+            vk::ImageAspectFlags::DEPTH,
+        )?;
+
+        Ok((depth_image, depth_image_view, depth_image_memory))
     }
 }
 
