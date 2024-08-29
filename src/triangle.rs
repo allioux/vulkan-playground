@@ -17,7 +17,7 @@ use crate::base::{
 
 #[repr(C)]
 struct Vertex {
-    pos: Vec2,
+    pos: Vec3,
     color: Vec3,
     tex_coord: Vec2,
 }
@@ -35,7 +35,7 @@ impl Vertex {
             vk::VertexInputAttributeDescription::default()
                 .binding(0)
                 .location(0)
-                .format(vk::Format::R32G32_SFLOAT)
+                .format(vk::Format::R32G32B32_SFLOAT)
                 .offset(offset_of!(Vertex, pos) as u32),
             vk::VertexInputAttributeDescription::default()
                 .binding(0)
@@ -76,15 +76,19 @@ pub struct Triangle {
     vertex_buffer_memory: vk::DeviceMemory,
     index_buffer: vk::Buffer,
     index_buffer_memory: vk::DeviceMemory,
+    index_count: u32,
     uniform_buffers: Vec<vk::Buffer>,
     uniform_buffers_memory: Vec<vk::DeviceMemory>,
     uniform_buffers_mapped: Vec<Align<UniformBufferObject>>,
     descriptor_pool: vk::DescriptorPool,
     descriptor_set_layout: vk::DescriptorSetLayout,
     descriptor_sets: Vec<vk::DescriptorSet>,
-    image: vk::Image,
-    image_memory: vk::DeviceMemory,
-    image_view: vk::ImageView,
+    depth_image: vk::Image,
+    depth_image_memory: vk::DeviceMemory,
+    depth_image_view: vk::ImageView,
+    texture_image: vk::Image,
+    texture_image_memory: vk::DeviceMemory,
+    texture_image_view: vk::ImageView,
     sampler: vk::Sampler,
     instant: Instant,
 }
@@ -105,28 +109,48 @@ impl Triangle {
 
         let vertices = vec![
             Vertex {
-                pos: vec2(-0.5, -0.5),
+                pos: vec3(-0.5, -0.5, 0.0),
                 color: vec3(1.0, 0.0, 0.0),
                 tex_coord: vec2(1.0, 0.0),
             },
             Vertex {
-                pos: vec2(0.5, -0.5),
+                pos: vec3(0.5, -0.5, 0.0),
                 color: vec3(0.0, 1.0, 0.0),
                 tex_coord: vec2(0.0, 0.0),
             },
             Vertex {
-                pos: vec2(0.5, 0.5),
+                pos: vec3(0.5, 0.5, 0.0),
                 color: vec3(0.0, 0.0, 1.0),
                 tex_coord: vec2(0.0, 1.0),
             },
             Vertex {
-                pos: vec2(-0.5, 0.5),
+                pos: vec3(-0.5, 0.5, 0.0),
+                color: vec3(1.0, 1.0, 1.0),
+                tex_coord: vec2(1.0, 1.0),
+            },
+            Vertex {
+                pos: vec3(-0.5, -0.5, -0.5),
+                color: vec3(1.0, 0.0, 0.0),
+                tex_coord: vec2(1.0, 0.0),
+            },
+            Vertex {
+                pos: vec3(0.5, -0.5, -0.5),
+                color: vec3(0.0, 1.0, 0.0),
+                tex_coord: vec2(0.0, 0.0),
+            },
+            Vertex {
+                pos: vec3(0.5, 0.5, -0.5),
+                color: vec3(0.0, 0.0, 1.0),
+                tex_coord: vec2(0.0, 1.0),
+            },
+            Vertex {
+                pos: vec3(-0.5, 0.5, -0.5),
                 color: vec3(1.0, 1.0, 1.0),
                 tex_coord: vec2(1.0, 1.0),
             },
         ];
 
-        let indices: Vec<u16> = vec![0, 1, 2, 2, 3, 0];
+        let indices: Vec<u16> = vec![0, 1, 2, 2, 3, 0, 4, 5, 6, 6, 7, 4];
 
         unsafe {
             let base = Base::new(window)?;
@@ -213,6 +237,23 @@ impl Triangle {
 
             let command_buffers = device.allocate_command_buffers(&allocate_info)?;
 
+            // DEPTH IMAGE
+
+            let depth_format = base.find_depth_format()?;
+            let (depth_image, depth_image_memory, _) = base.create_image(ImageDescriptor {
+                extent: base.device_data.surface_extent.into(),
+                format: depth_format,
+                tiling: vk::ImageTiling::OPTIMAL,
+                properties: vk::MemoryPropertyFlags::DEVICE_LOCAL,
+                usage: vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT,
+            })?;
+
+            let depth_image_view = base.device_data.create_image_view(
+                depth_image,
+                depth_format,
+                vk::ImageAspectFlags::DEPTH,
+            )?;
+
             // TEXTURE IMAGE
 
             let image = ImageReader::open("textures/statue.jpg")?.decode()?;
@@ -242,7 +283,7 @@ impl Triangle {
             image_slice.copy_from_slice(image_data.as_bytes());
             device.unmap_memory(staging_buffer_memory);
 
-            let (image, image_memory, _) = base.create_image(ImageDescriptor {
+            let (texture_image, texture_image_memory, _) = base.create_image(ImageDescriptor {
                 extent: image_extent,
                 format: vk::Format::R8G8B8A8_SRGB,
                 tiling: vk::ImageTiling::OPTIMAL,
@@ -253,7 +294,7 @@ impl Triangle {
             let command_buffer = base.begin_single_time_commands(command_pool)?;
             base.transition_image_layout(
                 command_buffer,
-                image,
+                texture_image,
                 TransitionImageLayoutDesc::from_layouts(
                     vk::Format::R8G8B8A8_SRGB,
                     vk::ImageLayout::UNDEFINED,
@@ -262,12 +303,12 @@ impl Triangle {
             );
             base.end_single_time_commands(command_pool, command_buffer)?;
 
-            base.copy_buffer_to_image(command_pool, staging_buffer, image, image_extent)?;
+            base.copy_buffer_to_image(command_pool, staging_buffer, texture_image, image_extent)?;
 
             let command_buffer = base.begin_single_time_commands(command_pool)?;
             base.transition_image_layout(
                 command_buffer,
-                image,
+                texture_image,
                 TransitionImageLayoutDesc::from_layouts(
                     vk::Format::R8G8B8A8_SRGB,
                     vk::ImageLayout::TRANSFER_DST_OPTIMAL,
@@ -281,9 +322,11 @@ impl Triangle {
 
             // IMAGE VIEW
 
-            let image_view = base
-                .device_data
-                .create_image_view(image, vk::Format::R8G8B8A8_SRGB)?;
+            let texture_image_view = base.device_data.create_image_view(
+                texture_image,
+                vk::Format::R8G8B8A8_SRGB,
+                vk::ImageAspectFlags::COLOR,
+            )?;
 
             // SAMPLER
 
@@ -376,7 +419,7 @@ impl Triangle {
 
                 let image_info = vk::DescriptorImageInfo::default()
                     .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                    .image_view(image_view)
+                    .image_view(texture_image_view)
                     .sampler(sampler);
 
                 let image_descriptor_write = vk::WriteDescriptorSet::default()
@@ -412,6 +455,8 @@ impl Triangle {
                 vk::BufferUsageFlags::VERTEX_BUFFER,
                 vertices,
             )?;
+
+            let index_count = indices.len() as u32;
 
             let (index_buffer, index_buffer_memory) = base.create_and_populate_buffer(
                 command_pool,
@@ -453,15 +498,19 @@ impl Triangle {
                 vertex_buffer_memory,
                 index_buffer,
                 index_buffer_memory,
+                index_count,
                 uniform_buffers,
                 uniform_buffers_memory,
                 uniform_buffers_mapped,
                 descriptor_pool,
                 descriptor_set_layout,
                 descriptor_sets,
-                image,
-                image_memory,
-                image_view,
+                depth_image,
+                depth_image_memory,
+                depth_image_view,
+                texture_image,
+                texture_image_memory,
+                texture_image_view,
                 sampler,
                 instant: Instant::now(),
             })
@@ -504,12 +553,14 @@ impl Triangle {
                             self.command_buffers[frame_index],
                             self.base.swapchain_data.images[image_index as usize],
                             self.base.swapchain_data.image_views[image_index as usize],
+                            self.depth_image,
+                            self.depth_image_view,
                             self.pipelines[0],
                             self.pipeline_layout,
                             &[self.vertex_buffer],
                             self.index_buffer,
                             vk::IndexType::UINT16,
-                            6,
+                            self.index_count,
                             &self.descriptor_sets,
                             frame_index as u32,
                         )
@@ -622,9 +673,13 @@ impl Drop for Triangle {
             }
 
             device.destroy_sampler(self.sampler, None);
-            device.destroy_image_view(self.image_view, None);
-            device.destroy_image(self.image, None);
-            device.free_memory(self.image_memory, None);
+            device.destroy_image_view(self.texture_image_view, None);
+            device.destroy_image(self.texture_image, None);
+            device.free_memory(self.texture_image_memory, None);
+
+            device.destroy_image_view(self.depth_image_view, None);
+            device.destroy_image(self.depth_image, None);
+            device.free_memory(self.depth_image_memory, None);
 
             for &fence in &self.in_flight_fences {
                 device.destroy_fence(fence, None)

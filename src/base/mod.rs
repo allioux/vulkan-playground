@@ -260,6 +260,8 @@ impl Base {
         command_buffer: vk::CommandBuffer,
         image: vk::Image,
         image_view: vk::ImageView,
+        depth_image: vk::Image,
+        depth_image_view: vk::ImageView,
         graphics_pipeline: vk::Pipeline,
         pipeline_layout: vk::PipelineLayout,
         vertex_buffers: &[vk::Buffer],
@@ -310,6 +312,15 @@ impl Base {
                 .store_op(vk::AttachmentStoreOp::STORE)
                 .clear_value(vk::ClearValue::default())];
 
+            let depth_attachment = vk::RenderingAttachmentInfo::default()
+                .image_view(depth_image_view)
+                .image_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
+                .load_op(vk::AttachmentLoadOp::CLEAR)
+                .store_op(vk::AttachmentStoreOp::DONT_CARE)
+                .clear_value(vk::ClearValue {
+                    depth_stencil: vk::ClearDepthStencilValue::default().depth(1.0),
+                });
+
             let rendering_info = vk::RenderingInfo::default()
                 .render_area(
                     vk::Rect2D::default()
@@ -321,6 +332,7 @@ impl Base {
                         ),
                 )
                 .color_attachments(&color_attachments)
+                .depth_attachment(&depth_attachment)
                 .layer_count(1);
 
             self.transition_image_layout(
@@ -342,6 +354,7 @@ impl Base {
                 &[descriptor_sets[frame_index as usize]],
                 &[],
             );
+
             device.cmd_draw_indexed(command_buffer, index_count, 1, 0, 0, 0);
             dynamic_rendering_khr.cmd_end_rendering(command_buffer);
 
@@ -381,8 +394,8 @@ impl Base {
                 .rasterizer_discard_enable(false)
                 .polygon_mode(vk::PolygonMode::FILL)
                 .line_width(1.0)
-                .cull_mode(vk::CullModeFlags::BACK)
-                .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
+                .cull_mode(vk::CullModeFlags::NONE)
+                //.front_face(vk::FrontFace::COUNTER_CLOCKWISE)
                 .depth_bias_enable(false)
                 .depth_bias_constant_factor(0.0)
                 .depth_bias_clamp(0.0)
@@ -414,11 +427,19 @@ impl Base {
             let mut pipeline_rendering_info = vk::PipelineRenderingCreateInfo::default()
                 .color_attachment_formats(std::slice::from_ref(
                     &self.device_data.surface_format_khr.format,
-                ));
+                ))
+                .depth_attachment_format(self.find_depth_format()?);
 
             let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
             let dynamic_state_info =
                 vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
+
+            let depth_stencil_info = vk::PipelineDepthStencilStateCreateInfo::default()
+                .depth_test_enable(true)
+                .depth_write_enable(true)
+                .depth_compare_op(vk::CompareOp::LESS)
+                .depth_bounds_test_enable(false)
+                .stencil_test_enable(false);
 
             let pipeline_info = vk::GraphicsPipelineCreateInfo::default()
                 .stages(&pipeline_desc.shader_stages_info)
@@ -431,6 +452,7 @@ impl Base {
                 .dynamic_state(&dynamic_state_info)
                 .layout(pipeline_desc.pipeline_layout)
                 .subpass(0)
+                .depth_stencil_state(&depth_stencil_info)
                 .push_next(&mut pipeline_rendering_info);
 
             let pipeline = device
@@ -733,6 +755,50 @@ impl Base {
             }
             Err("Failed to find an appropriate memory type.".to_string())
         }
+    }
+
+    pub fn find_supported_format(
+        &self,
+        candidates: Vec<vk::Format>,
+        tiling: vk::ImageTiling,
+        features: vk::FormatFeatureFlags,
+    ) -> Result<vk::Format, String> {
+        unsafe {
+            for candidate in candidates {
+                let props = self.instance.get_physical_device_format_properties(
+                    self.device_data.physical_device,
+                    candidate,
+                );
+
+                if tiling == vk::ImageTiling::LINEAR
+                    && (props.linear_tiling_features & features) == features
+                {
+                    return Ok(candidate);
+                } else if tiling == vk::ImageTiling::OPTIMAL
+                    && (props.optimal_tiling_features & features) == features
+                {
+                    return Ok(candidate);
+                }
+            }
+            Err("Failed to find a supported format.".to_string())
+        }
+    }
+
+    pub fn find_depth_format(&self) -> Result<vk::Format, String> {
+        let candidates = vec![
+            vk::Format::D32_SFLOAT,
+            vk::Format::D32_SFLOAT_S8_UINT,
+            vk::Format::D24_UNORM_S8_UINT,
+        ];
+        self.find_supported_format(
+            candidates,
+            vk::ImageTiling::OPTIMAL,
+            vk::FormatFeatureFlags::DEPTH_STENCIL_ATTACHMENT,
+        )
+    }
+
+    pub fn has_stencil_component(format: vk::Format) -> bool {
+        format == vk::Format::D32_SFLOAT_S8_UINT || format == vk::Format::D24_UNORM_S8_UINT
     }
 }
 

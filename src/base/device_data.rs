@@ -124,9 +124,10 @@ impl DeviceData {
         &self,
         image: vk::Image,
         format: vk::Format,
+        aspect_flags: vk::ImageAspectFlags,
     ) -> VkResult<vk::ImageView> {
         let subresource_range = vk::ImageSubresourceRange::default()
-            .aspect_mask(vk::ImageAspectFlags::COLOR)
+            .aspect_mask(aspect_flags)
             .base_mip_level(0)
             .level_count(1)
             .base_array_layer(0)

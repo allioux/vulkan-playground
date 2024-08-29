@@ -69,7 +69,13 @@ impl SwapchainData {
 
             let image_views = images
                 .iter()
-                .map(|&image| device_data.create_image_view(image, surface_format.format))
+                .map(|&image| {
+                    device_data.create_image_view(
+                        image,
+                        surface_format.format,
+                        vk::ImageAspectFlags::COLOR,
+                    )
+                })
                 .collect::<Result<_, _>>()?;
 
             Ok(SwapchainData {
