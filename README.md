@@ -2,4 +2,4 @@
 
 The infamous [Vulkan Tutorial](https://vulkan-tutorial.com/).
 
-![A colourful triangle.](/images/triangle.png)
+![A rotating statue.](/images/screenshot.png)

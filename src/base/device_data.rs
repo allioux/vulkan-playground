@@ -31,6 +31,7 @@ impl DeviceData {
                         .iter()
                         .enumerate()
                         .find_map(|(index, info)| {
+                            let device_features = instance.get_physical_device_features(device);
                             let supports_graphic_and_surface =
                                 info.queue_flags.contains(vk::QueueFlags::GRAPHICS)
                                     && surface_extension
@@ -39,7 +40,8 @@ impl DeviceData {
                                             index as u32,
                                             surface,
                                         )
-                                        .unwrap();
+                                        .unwrap()
+                                    && device_features.sampler_anisotropy == 1;
                             if supports_graphic_and_surface {
                                 Some((device, index))
                             } else {
@@ -49,7 +51,7 @@ impl DeviceData {
                 })
                 .ok_or("Could not find a suitable device.")?;
 
-            let device_extension_names_raw = [
+            let enabled_extension_names = [
                 khr::swapchain::NAME.as_ptr(),
                 khr::multiview::NAME.as_ptr(),
                 khr::maintenance2::NAME.as_ptr(),
@@ -67,13 +69,16 @@ impl DeviceData {
             let mut synchronization2_feature =
                 vk::PhysicalDeviceSynchronization2Features::default().synchronization2(true);
 
+            let enabled_features = vk::PhysicalDeviceFeatures::default().sampler_anisotropy(true);
+
             let queue_create_info = vk::DeviceQueueCreateInfo::default()
                 .queue_family_index(queue_family_index as u32)
                 .queue_priorities(&[1.0]);
 
             let device_create_info = vk::DeviceCreateInfo::default()
                 .queue_create_infos(std::slice::from_ref(&queue_create_info))
-                .enabled_extension_names(&device_extension_names_raw)
+                .enabled_extension_names(&enabled_extension_names)
+                .enabled_features(&enabled_features)
                 .push_next(&mut dynamic_rendering_feature)
                 .push_next(&mut synchronization2_feature);
 

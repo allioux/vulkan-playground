@@ -7,7 +7,7 @@ use ash::prelude::VkResult;
 use ash::util::{read_spv, Align};
 use ash::vk::{self};
 use image::{EncodableLayout, GenericImageView, ImageReader};
-use nalgebra_glm::{vec3, Mat4, Vec3};
+use nalgebra_glm::{vec2, vec3, Mat4, Vec2, Vec3};
 use winit::dpi::PhysicalSize;
 use winit::window::Window;
 
@@ -17,8 +17,9 @@ use crate::base::{
 
 #[repr(C)]
 struct Vertex {
-    pos: [f32; 2],
-    color: [f32; 3],
+    pos: Vec2,
+    color: Vec3,
+    tex_coord: Vec2,
 }
 
 impl Vertex {
@@ -41,6 +42,11 @@ impl Vertex {
                 .location(1)
                 .format(vk::Format::R32G32B32_SFLOAT)
                 .offset(offset_of!(Vertex, color) as u32),
+            vk::VertexInputAttributeDescription::default()
+                .binding(0)
+                .location(2)
+                .format(vk::Format::R32G32_SFLOAT)
+                .offset(offset_of!(Vertex, tex_coord) as u32),
         ]
     }
 }
@@ -79,6 +85,7 @@ pub struct Triangle {
     image: vk::Image,
     image_memory: vk::DeviceMemory,
     image_view: vk::ImageView,
+    sampler: vk::Sampler,
     instant: Instant,
 }
 
@@ -98,20 +105,24 @@ impl Triangle {
 
         let vertices = vec![
             Vertex {
-                pos: [-0.5, -0.5],
-                color: [1.0, 0.0, 0.0],
+                pos: vec2(-0.5, -0.5),
+                color: vec3(1.0, 0.0, 0.0),
+                tex_coord: vec2(1.0, 0.0),
             },
             Vertex {
-                pos: [0.5, -0.5],
-                color: [0.0, 1.0, 0.0],
+                pos: vec2(0.5, -0.5),
+                color: vec3(0.0, 1.0, 0.0),
+                tex_coord: vec2(0.0, 0.0),
             },
             Vertex {
-                pos: [0.5, 0.5],
-                color: [0.0, 0.0, 1.0],
+                pos: vec2(0.5, 0.5),
+                color: vec3(0.0, 0.0, 1.0),
+                tex_coord: vec2(0.0, 1.0),
             },
             Vertex {
-                pos: [-0.5, 0.5],
-                color: [1.0, 1.0, 1.0],
+                pos: vec2(-0.5, 0.5),
+                color: vec3(1.0, 1.0, 1.0),
+                tex_coord: vec2(1.0, 1.0),
             },
         ];
 
@@ -186,73 +197,6 @@ impl Triangle {
                     memory_requirements.size,
                 ));
             }
-
-            // DESCRIPTOR POOL
-
-            let pool_size = vk::DescriptorPoolSize::default()
-                .ty(vk::DescriptorType::UNIFORM_BUFFER)
-                .descriptor_count(in_flight_frames);
-
-            let pool_info = vk::DescriptorPoolCreateInfo::default()
-                .pool_sizes(std::slice::from_ref(&pool_size))
-                .max_sets(in_flight_frames);
-
-            let descriptor_pool = device.create_descriptor_pool(&pool_info, None)?;
-
-            // DESCRIPTOR SET LAYOUT
-
-            let ubo_layout_binding = vk::DescriptorSetLayoutBinding::default()
-                .binding(0)
-                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::VERTEX);
-
-            let layout_info = vk::DescriptorSetLayoutCreateInfo::default()
-                .bindings(std::slice::from_ref(&ubo_layout_binding));
-
-            let descriptor_set_layout = base
-                .device_data
-                .device
-                .create_descriptor_set_layout(&layout_info, None)?;
-
-            // DESCRIPTOR SETS
-
-            let layouts = vec![descriptor_set_layout; in_flight_frames as usize];
-            let descriptor_set_allocate_info = vk::DescriptorSetAllocateInfo::default()
-                .descriptor_pool(descriptor_pool)
-                .set_layouts(&layouts);
-
-            let descriptor_sets = device.allocate_descriptor_sets(&descriptor_set_allocate_info)?;
-
-            for i in 0..in_flight_frames {
-                let buffer_info = vk::DescriptorBufferInfo::default()
-                    .buffer(uniform_buffers[i as usize])
-                    .offset(0)
-                    .range(size_of::<UniformBufferObject>() as u64);
-
-                let descriptor_write = vk::WriteDescriptorSet::default()
-                    .dst_set(descriptor_sets[i as usize])
-                    .dst_binding(0)
-                    .dst_array_element(0)
-                    .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                    .descriptor_count(1)
-                    .buffer_info(std::slice::from_ref(&buffer_info));
-
-                device.update_descriptor_sets(&[descriptor_write], &[]);
-            }
-
-            // PIPELINE
-
-            let pipeline_layout_info = vk::PipelineLayoutCreateInfo::default()
-                .set_layouts(std::slice::from_ref(&descriptor_set_layout));
-
-            let pipeline_layout = device.create_pipeline_layout(&pipeline_layout_info, None)?;
-
-            let pipeline = base.create_pipeline(&PipelineDescriptor {
-                pipeline_layout,
-                vertex_input_info,
-                shader_stages_info: &shader_stages_info,
-            })?;
 
             // COMMAND POOL
 
@@ -341,6 +285,126 @@ impl Triangle {
                 .device_data
                 .create_image_view(image, vk::Format::R8G8B8A8_SRGB)?;
 
+            // SAMPLER
+
+            let properties = base
+                .instance
+                .get_physical_device_properties(base.device_data.physical_device);
+
+            let sampler_info = vk::SamplerCreateInfo::default()
+                .mag_filter(vk::Filter::LINEAR)
+                .min_filter(vk::Filter::LINEAR)
+                .address_mode_u(vk::SamplerAddressMode::REPEAT)
+                .address_mode_v(vk::SamplerAddressMode::REPEAT)
+                .address_mode_w(vk::SamplerAddressMode::REPEAT)
+                .anisotropy_enable(true)
+                .max_anisotropy(properties.limits.max_sampler_anisotropy)
+                .border_color(vk::BorderColor::INT_OPAQUE_BLACK)
+                .unnormalized_coordinates(false)
+                .compare_enable(false)
+                .compare_op(vk::CompareOp::ALWAYS)
+                .mipmap_mode(vk::SamplerMipmapMode::LINEAR)
+                .mip_lod_bias(0.0)
+                .min_lod(0.0)
+                .max_lod(0.0);
+
+            let sampler = device.create_sampler(&sampler_info, None)?;
+
+            // DESCRIPTOR POOL
+
+            let ubo_pool_size = vk::DescriptorPoolSize::default()
+                .ty(vk::DescriptorType::UNIFORM_BUFFER)
+                .descriptor_count(in_flight_frames);
+
+            let sampler_pool_size = vk::DescriptorPoolSize::default()
+                .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(in_flight_frames);
+
+            let pool_sizes = [ubo_pool_size, sampler_pool_size];
+
+            let pool_info = vk::DescriptorPoolCreateInfo::default()
+                .pool_sizes(&pool_sizes)
+                .max_sets(in_flight_frames);
+
+            let descriptor_pool = device.create_descriptor_pool(&pool_info, None)?;
+
+            // DESCRIPTOR SET LAYOUT
+
+            let ubo_layout_binding = vk::DescriptorSetLayoutBinding::default()
+                .binding(0)
+                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::VERTEX);
+
+            let sampler_layout_binding = vk::DescriptorSetLayoutBinding::default()
+                .binding(1)
+                .descriptor_count(1)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT);
+
+            let bindings = [ubo_layout_binding, sampler_layout_binding];
+
+            let layout_info = vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings);
+
+            let descriptor_set_layout = base
+                .device_data
+                .device
+                .create_descriptor_set_layout(&layout_info, None)?;
+
+            // DESCRIPTOR SETS
+
+            let layouts = vec![descriptor_set_layout; in_flight_frames as usize];
+            let descriptor_set_allocate_info = vk::DescriptorSetAllocateInfo::default()
+                .descriptor_pool(descriptor_pool)
+                .set_layouts(&layouts);
+
+            let descriptor_sets = device.allocate_descriptor_sets(&descriptor_set_allocate_info)?;
+
+            for i in 0..in_flight_frames {
+                let ubo_info = vk::DescriptorBufferInfo::default()
+                    .buffer(uniform_buffers[i as usize])
+                    .offset(0)
+                    .range(size_of::<UniformBufferObject>() as u64);
+
+                let ubo_descriptor_write = vk::WriteDescriptorSet::default()
+                    .dst_set(descriptor_sets[i as usize])
+                    .dst_binding(0)
+                    .dst_array_element(0)
+                    .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                    .descriptor_count(1)
+                    .buffer_info(std::slice::from_ref(&ubo_info));
+
+                let image_info = vk::DescriptorImageInfo::default()
+                    .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                    .image_view(image_view)
+                    .sampler(sampler);
+
+                let image_descriptor_write = vk::WriteDescriptorSet::default()
+                    .dst_set(descriptor_sets[i as usize])
+                    .dst_binding(1)
+                    .dst_array_element(0)
+                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                    .descriptor_count(1)
+                    .image_info(std::slice::from_ref(&image_info));
+
+                let descriptor_writes = [ubo_descriptor_write, image_descriptor_write];
+
+                device.update_descriptor_sets(&descriptor_writes, &[]);
+            }
+
+            // PIPELINE
+
+            let pipeline_layout_info = vk::PipelineLayoutCreateInfo::default()
+                .set_layouts(std::slice::from_ref(&descriptor_set_layout));
+
+            let pipeline_layout = device.create_pipeline_layout(&pipeline_layout_info, None)?;
+
+            let pipeline = base.create_pipeline(&PipelineDescriptor {
+                pipeline_layout,
+                vertex_input_info,
+                shader_stages_info: &shader_stages_info,
+            })?;
+
             // VERTEX & INDEX BUFFERS
 
             let (vertex_buffer, vertex_buffer_memory) = base.create_and_populate_buffer(
@@ -398,6 +462,7 @@ impl Triangle {
                 image,
                 image_memory,
                 image_view,
+                sampler,
                 instant: Instant::now(),
             })
         }
@@ -556,6 +621,7 @@ impl Drop for Triangle {
                 device.free_memory(buffer_memory, None);
             }
 
+            device.destroy_sampler(self.sampler, None);
             device.destroy_image_view(self.image_view, None);
             device.destroy_image(self.image, None);
             device.free_memory(self.image_memory, None);
