@@ -12,18 +12,18 @@ use winit::{
 
 mod base;
 
-mod triangle;
-use triangle::Triangle;
+mod vulkan_example;
+use vulkan_example::VulkanExample;
 
 struct Application {
-    triangle: Option<Triangle>,
+    vulkan_example: Option<VulkanExample>,
     window: Option<Arc<Window>>,
 }
 
 impl Application {
     fn new() -> Application {
         Application {
-            triangle: None,
+            vulkan_example: None,
             window: None,
         }
     }
@@ -41,12 +41,12 @@ impl ApplicationHandler for Application {
         let window = Arc::new(event_loop.create_window(window_attributes).unwrap());
         window.set_cursor_visible(false);
 
-        match Triangle::new(Arc::clone(&window)) {
-            Ok(triangle) => {
-                self.triangle = Some(triangle);
+        match VulkanExample::new(Arc::clone(&window)) {
+            Ok(vulkan_example) => {
+                self.vulkan_example = Some(vulkan_example);
                 self.window = Some(window);
             }
-            Err(err) => panic!("Triangle failed with error: {}", err),
+            Err(err) => panic!("VulkanExample failed with error: {}", err),
         }
     }
 
@@ -66,10 +66,10 @@ impl ApplicationHandler for Application {
                 ..
             }
             | WindowEvent::CloseRequested => event_loop.exit(),
-            WindowEvent::Resized(size) => match self.triangle {
-                Some(ref mut triangle) => {
-                    let _ = triangle.resize(size);
-                    let _ = triangle.draw_frame();
+            WindowEvent::Resized(size) => match self.vulkan_example {
+                Some(ref mut vulkan_example) => {
+                    let _ = vulkan_example.resize(size);
+                    let _ = vulkan_example.draw_frame();
                 }
                 _ => (),
             },
@@ -78,9 +78,9 @@ impl ApplicationHandler for Application {
     }
 
     fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
-        match self.triangle {
-            Some(ref mut triangle) => {
-                let _ = triangle.draw_frame();
+        match self.vulkan_example {
+            Some(ref mut vulkan_example) => {
+                let _ = vulkan_example.draw_frame();
             }
             _ => (),
         }

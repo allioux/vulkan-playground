@@ -59,7 +59,7 @@ struct UniformBufferObject {
     proj: Mat4,
 }
 
-pub struct Triangle {
+pub struct VulkanExample {
     base: Base,
     vert_module: vk::ShaderModule,
     frag_module: vk::ShaderModule,
@@ -93,7 +93,7 @@ pub struct Triangle {
     instant: Instant,
 }
 
-impl Triangle {
+impl VulkanExample {
     fn create_shader_module(base: &Base, code: Vec<u32>) -> VkResult<vk::ShaderModule> {
         let shader_info = vk::ShaderModuleCreateInfo::default().code(&code);
 
@@ -104,7 +104,7 @@ impl Triangle {
         }
     }
 
-    pub fn new(window: Arc<Window>) -> Result<Triangle, Box<dyn Error>> {
+    pub fn new(window: Arc<Window>) -> Result<VulkanExample, Box<dyn Error>> {
         let texture_path = "textures/viking_room.png";
         let model_path = "models/viking_room.obj";
 
@@ -428,7 +428,7 @@ impl Triangle {
                 in_flight_fences.push(device.create_fence(&fence_info, None)?);
             }
 
-            Ok(Triangle {
+            Ok(VulkanExample {
                 base,
                 vert_module,
                 frag_module,
@@ -635,7 +635,7 @@ impl Triangle {
     }
 }
 
-impl Drop for Triangle {
+impl Drop for VulkanExample {
     fn drop(&mut self) {
         unsafe {
             let DeviceData { device, .. } = &self.base.device_data;
