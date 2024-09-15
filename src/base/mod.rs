@@ -101,12 +101,19 @@ impl TransitionImageLayoutDesc {
     }
 }
 
+struct DepthBufferingData {
+    depth_image: vk::Image,
+    depth_image_memory: vk::DeviceMemory,
+    depth_image_view: vk::ImageView,
+}
+
 pub struct Base {
     pub instance: Instance,
     pub surface_data: SurfaceData,
     pub device_data: DeviceData,
     pub present_queue: vk::Queue,
     pub swapchain_data: SwapchainData,
+    pub depth_buffering_data: Option<DepthBufferingData>,
 }
 
 impl Base {
@@ -196,7 +203,40 @@ impl Base {
                 device_data,
                 present_queue,
                 swapchain_data,
+                depth_buffering_data: None,
             })
+        }
+    }
+
+    fn cleanup_depth_buffering(&self) {
+        let device = &self.device_data.device;
+        match &self.depth_buffering_data {
+            Some(data) => unsafe {
+                device.destroy_image_view(data.depth_image_view, None);
+                device.destroy_image(data.depth_image, None);
+                device.free_memory(data.depth_image_memory, None);
+            },
+            None => (),
+        }
+    }
+
+    // Recreate the depth buffering data if enable is true even if it was already created. 
+    // Used when the swapchain is resized and the depth buffering data has to be recreated. 
+    pub fn enable_depth_buffering(&mut self, enable: bool) -> Result<(), Box<dyn Error>> {
+        self.cleanup_depth_buffering();
+
+        if enable {
+            let (depth_image, depth_image_view, depth_image_memory) = self.create_depth_image()?;
+            let depth_buffering_data = DepthBufferingData {
+                depth_image,
+                depth_image_memory,
+                depth_image_view,
+            };
+            self.depth_buffering_data = Some(depth_buffering_data);
+            Ok(())
+        } else {
+            self.depth_buffering_data = None;
+            Ok(())
         }
     }
 
@@ -231,6 +271,8 @@ impl Base {
 
             self.device_data.surface_extent = surface_extent;
 
+            self.enable_depth_buffering(self.depth_buffering_data.is_some())?;
+
             self.swapchain_data = SwapchainData::new(
                 &self.instance,
                 &self.device_data,
@@ -261,8 +303,6 @@ impl Base {
         command_buffer: vk::CommandBuffer,
         image: vk::Image,
         image_view: vk::ImageView,
-        depth_image: vk::Image,
-        depth_image_view: vk::ImageView,
         graphics_pipeline: vk::Pipeline,
         pipeline_layout: vk::PipelineLayout,
         vertex_buffers: &[vk::Buffer],
@@ -313,14 +353,16 @@ impl Base {
                 .store_op(vk::AttachmentStoreOp::STORE)
                 .clear_value(vk::ClearValue::default())];
 
-            let depth_attachment = vk::RenderingAttachmentInfo::default()
-                .image_view(depth_image_view)
-                .image_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
-                .load_op(vk::AttachmentLoadOp::CLEAR)
-                .store_op(vk::AttachmentStoreOp::DONT_CARE)
-                .clear_value(vk::ClearValue {
-                    depth_stencil: vk::ClearDepthStencilValue::default().depth(1.0),
-                });
+            let depth_attachment = self.depth_buffering_data.as_ref().map(|data| {
+                vk::RenderingAttachmentInfo::default()
+                    .image_view(data.depth_image_view)
+                    .image_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
+                    .load_op(vk::AttachmentLoadOp::CLEAR)
+                    .store_op(vk::AttachmentStoreOp::DONT_CARE)
+                    .clear_value(vk::ClearValue {
+                        depth_stencil: vk::ClearDepthStencilValue::default().depth(1.0),
+                    })
+            });
 
             let rendering_info = vk::RenderingInfo::default()
                 .render_area(
@@ -333,8 +375,13 @@ impl Base {
                         ),
                 )
                 .color_attachments(&color_attachments)
-                .depth_attachment(&depth_attachment)
                 .layer_count(1);
+
+            let rendering_info = depth_attachment
+                .as_ref()
+                .map_or(rendering_info, |depth_attachment| {
+                    rendering_info.depth_attachment(&depth_attachment)
+                });
 
             self.transition_image_layout(
                 command_buffer,
@@ -827,6 +874,7 @@ impl Base {
 impl Drop for Base {
     fn drop(&mut self) {
         unsafe {
+            self.cleanup_depth_buffering();
             self.cleanup_swapchain();
             self.surface_data
                 .surface_extension

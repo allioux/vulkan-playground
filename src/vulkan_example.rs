@@ -83,9 +83,6 @@ pub struct VulkanExample {
     descriptor_pool: vk::DescriptorPool,
     descriptor_set_layout: vk::DescriptorSetLayout,
     descriptor_sets: Vec<vk::DescriptorSet>,
-    depth_image: vk::Image,
-    depth_image_memory: vk::DeviceMemory,
-    depth_image_view: vk::ImageView,
     texture_image: vk::Image,
     texture_image_memory: vk::DeviceMemory,
     texture_image_view: vk::ImageView,
@@ -113,7 +110,8 @@ impl VulkanExample {
         let (vertices, indices) = Self::load_model(model_path);
 
         unsafe {
-            let base = Base::new(window)?;
+            let mut base = Base::new(window)?;
+            base.enable_depth_buffering(true)?;
 
             let DeviceData {
                 ref device,
@@ -196,10 +194,6 @@ impl VulkanExample {
                 .command_buffer_count(in_flight_frames);
 
             let command_buffers = device.allocate_command_buffers(&allocate_info)?;
-
-            // DEPTH IMAGE
-
-            let (depth_image, depth_image_view, depth_image_memory) = base.create_depth_image()?;
 
             // TEXTURE IMAGE
 
@@ -452,9 +446,6 @@ impl VulkanExample {
                 descriptor_pool,
                 descriptor_set_layout,
                 descriptor_sets,
-                depth_image,
-                depth_image_memory,
-                depth_image_view,
                 texture_image,
                 texture_image_memory,
                 texture_image_view,
@@ -536,8 +527,6 @@ impl VulkanExample {
                             self.command_buffers[frame_index],
                             self.base.swapchain_data.images[image_index as usize],
                             self.base.swapchain_data.image_views[image_index as usize],
-                            self.depth_image,
-                            self.depth_image_view,
                             self.pipelines[0],
                             self.pipeline_layout,
                             &[self.vertex_buffer],
@@ -659,10 +648,6 @@ impl Drop for VulkanExample {
             device.destroy_image_view(self.texture_image_view, None);
             device.destroy_image(self.texture_image, None);
             device.free_memory(self.texture_image_memory, None);
-
-            device.destroy_image_view(self.depth_image_view, None);
-            device.destroy_image(self.depth_image, None);
-            device.free_memory(self.depth_image_memory, None);
 
             for &fence in &self.in_flight_fences {
                 device.destroy_fence(fence, None)
